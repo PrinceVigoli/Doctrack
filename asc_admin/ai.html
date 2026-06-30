@@ -12,7 +12,7 @@
     <nav class="sidebar-nav">
       <div class="nav-section">Main</div>
       <a class="nav-item" href="index.html"><span class="nav-icon">📊</span> Dashboard</a>
-      <a class="nav-item" href="documents.html"><span class="nav-icon">📁</span> Documents</a>
+      <a class="nav-item" href="documents.html"><span class="nav-icon">📁</span> Documents <span id="notif-badge" style="display:none;background:var(--red);color:#fff;border-radius:10px;font-size:10px;font-weight:700;padding:1px 6px;margin-left:4px">0</span></a>
       <div class="nav-section">Manage</div>
       <a class="nav-item" href="users.html"><span class="nav-icon">👥</span> Users</a>
       <a class="nav-item" href="offices.html"><span class="nav-icon">🏢</span> Offices</a>
@@ -183,9 +183,11 @@
 
 <div id="toast-container"></div>
 <script src="js/api.js"></script>
+<script src="js/live.js"></script>
 <script src="js/auth.js"></script>
 <script>
 Auth.require();
+if(typeof Live!=="undefined") Live.init();
 const u = Auth.getUser();
 if (u) {
   document.getElementById('user-name').textContent   = u.first_name || u.username;
