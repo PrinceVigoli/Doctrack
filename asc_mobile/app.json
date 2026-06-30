@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "ASC DocTrack",
+    "slug": "asc-doctrack",
+    "version": "1.0.0",
+    "sdkVersion": "54.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "edu.asc.doctrack"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#1B4332"
+      },
+      "package": "edu.asc.doctrack"
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "color": "#1B4332"
+        }
+      ]
+    ]
+  }
+}

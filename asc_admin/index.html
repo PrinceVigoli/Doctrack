@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASC DocTrack — Dashboard</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="sidebar-logo">ASC</div>
+      <div><div class="sidebar-name">DocTrack</div><div class="sidebar-ver">Admin v1.0</div></div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">Main</div>
+      <a class="nav-item active" href="index.html"><span class="nav-icon">📊</span> Dashboard</a>
+      <a class="nav-item" href="documents.html"><span class="nav-icon">📁</span> Documents</a>
+      <div class="nav-section">Manage</div>
+      <a class="nav-item" href="users.html"><span class="nav-icon">👥</span> Users</a>
+      <a class="nav-item" href="offices.html"><span class="nav-icon">🏢</span> Offices</a>
+      <a class="nav-item" href="ai.html"><span class="nav-icon">🤖</span> AI Classifier</a>
+      <div class="nav-section">System</div>
+      <a class="nav-item" href="reports.html"><span class="nav-icon">📈</span> Reports</a>
+    </nav>
+    <div class="sidebar-user">
+      <div class="user-avatar" id="user-avatar">A</div>
+      <div><div class="user-name" id="user-name">Admin</div><div class="user-role" id="user-role">admin</div></div>
+      <span class="logout-btn" onclick="Auth.logout()" title="Sign out">⏻</span>
+    </div>
+  </aside>
+
+  <div class="main-wrap">
+    <header class="topbar">
+      <div><div class="topbar-title">Dashboard</div><div class="topbar-sub">Apayao State College — Luna Campus</div></div>
+      <div class="topbar-actions">
+        <button class="btn btn-primary btn-sm" onclick="window.location.href='documents.html'">＋ New Document</button>
+        <button class="btn btn-secondary btn-sm" onclick="loadDashboard()">↻ Refresh</button>
+      </div>
+    </header>
+
+    <main class="page-content">
+      <div class="stat-grid" id="stat-grid">
+        <div class="stat-tile"><div class="skeleton sk-row sk-sm"></div><div class="skeleton sk-row sk-wide" style="margin-top:8px"></div></div>
+        <div class="stat-tile"><div class="skeleton sk-row sk-sm"></div><div class="skeleton sk-row sk-wide" style="margin-top:8px"></div></div>
+        <div class="stat-tile"><div class="skeleton sk-row sk-sm"></div><div class="skeleton sk-row sk-wide" style="margin-top:8px"></div></div>
+        <div class="stat-tile"><div class="skeleton sk-row sk-sm"></div><div class="skeleton sk-row sk-wide" style="margin-top:8px"></div></div>
+        <div class="stat-tile"><div class="skeleton sk-row sk-sm"></div><div class="skeleton sk-row sk-wide" style="margin-top:8px"></div></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+        <div class="card">
+          <div class="card-header"><span class="card-title">🤖 AI Document Types</span></div>
+          <div class="card-body"><div class="bar-chart" id="ai-chart"><div class="skeleton sk-row sk-wide"></div><div class="skeleton sk-row sk-mid"></div></div></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">🏢 Office Workload</span></div>
+          <div class="card-body"><div class="bar-chart" id="office-chart"><div class="skeleton sk-row sk-wide"></div><div class="skeleton sk-row sk-mid"></div></div></div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:340px 1fr;gap:20px">
+        <div class="card">
+          <div class="card-header"><span class="card-title">📋 Status Breakdown</span></div>
+          <div class="card-body" id="status-breakdown"><div class="skeleton sk-row sk-wide"></div><div class="skeleton sk-row sk-mid"></div></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">⚡ Recent Activity</span><a href="documents.html" class="btn btn-ghost btn-sm">View All</a></div>
+          <div class="card-body" style="padding:0">
+            <table class="data-table">
+              <thead><tr><th>Document</th><th>Action</th><th>By</th><th>Route</th><th>Time</th></tr></thead>
+              <tbody id="activity-body"><tr><td colspan="5"><div class="skeleton sk-row sk-wide" style="margin:12px 16px"></div></td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<div id="toast-container"></div>
+<script src="js/api.js"></script>
+<script src="js/auth.js"></script>
+<script>
+Auth.require();
+const u = Auth.getUser();
+if (u) {
+  document.getElementById('user-name').textContent   = u.first_name || u.username;
+  document.getElementById('user-role').textContent   = u.role;
+  document.getElementById('user-avatar').textContent = (u.first_name?.[0] || u.username[0]).toUpperCase();
+}
+const STATUS_META = [
+  { key:'pending',   label:'Pending',   color:'#F59E0B' },
+  { key:'in_review', label:'In Review', color:'#4895EF' },
+  { key:'approved',  label:'Approved',  color:'#40916C' },
+  { key:'completed', label:'Completed', color:'#16A34A' },
+  { key:'rejected',  label:'Rejected',  color:'#E63946' },
+  { key:'returned',  label:'Returned',  color:'#F4A261' },
+];
+async function loadDashboard() {
+  try {
+    const [sum, act] = await Promise.all([API.summary(), API.activity()]);
+    const byS = sum.by_status || {}, total = sum.total || 0;
+    document.getElementById('stat-grid').innerHTML = `
+      <div class="stat-tile" style="border-left-color:#1B4332"><div class="stat-val">${total}</div><div class="stat-label">Total Documents</div></div>
+      <div class="stat-tile" style="border-left-color:#F59E0B"><div class="stat-val">${byS.pending||0}</div><div class="stat-label">Pending</div></div>
+      <div class="stat-tile" style="border-left-color:#4895EF"><div class="stat-val">${byS.in_review||0}</div><div class="stat-label">In Review</div></div>
+      <div class="stat-tile" style="border-left-color:#40916C"><div class="stat-val">${byS.completed||0}</div><div class="stat-label">Completed</div></div>
+      <div class="stat-tile" style="border-left-color:#F4A261"><div class="stat-val">${sum.avg_processing_hrs != null ? sum.avg_processing_hrs+'h' : '—'}</div><div class="stat-label">Avg Processing</div></div>`;
+
+    const labels = sum.by_ai_label || [], maxAI = Math.max(...labels.map(l=>l.count),1);
+    document.getElementById('ai-chart').innerHTML = labels.length
+      ? labels.map(l=>`<div class="bar-row"><span class="bar-label">${l.ai_label}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.round(l.count/maxAI*100)}%"></div></div><span class="bar-count">${l.count}</span></div>`).join('')
+      : '<div class="empty-state"><div class="empty-icon">🤖</div><div class="empty-title">No AI data yet</div></div>';
+
+    const offices = sum.office_workload || [], maxOff = Math.max(...offices.map(o=>o.count),1);
+    document.getElementById('office-chart').innerHTML = offices.length
+      ? offices.slice(0,6).map(o=>`<div class="bar-row"><span class="bar-label">${o.office}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.round(o.count/maxOff*100)}%;background:#F4A261"></div></div><span class="bar-count">${o.count}</span></div>`).join('')
+      : '<p class="text-muted">No data</p>';
+
+    document.getElementById('status-breakdown').innerHTML = STATUS_META.map(s=>`
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:8px"><div style="width:10px;height:10px;border-radius:50%;background:${s.color}"></div><span style="font-size:13px;color:var(--text-secondary)">${s.label}</span></div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="width:80px;height:6px;background:var(--border);border-radius:3px;overflow:hidden"><div style="height:100%;background:${s.color};width:${total?Math.round((byS[s.key]||0)/total*100):0}%;border-radius:3px"></div></div>
+          <span style="font-weight:700;font-size:14px;width:24px;text-align:right">${byS[s.key]||0}</span>
+        </div>
+      </div>`).join('');
+
+    document.getElementById('activity-body').innerHTML = act.slice(0,10).map(log=>`
+      <tr>
+        <td><div style="font-weight:600;font-size:13px">${log.doc_title}</div><div class="text-muted">${log.tracking_number}</div></td>
+        <td>${statusBadge(log.action)}</td>
+        <td style="font-size:12px">${log.actor}</td>
+        <td style="font-size:12px;color:var(--text-muted)">${log.from_office!=='—'?log.from_office+' → '+log.to_office:'—'}</td>
+        <td class="text-muted">${fmtDateTime(log.timestamp)}</td>
+      </tr>`).join('') || '<tr><td colspan="5"><div class="empty-state"><div class="empty-icon">📋</div><div class="empty-title">No activity yet</div></div></td></tr>';
+  } catch(e) { toast('Failed to load: '+e.message,'error'); }
+}
+loadDashboard();
+</script>
+</body>
+</html>

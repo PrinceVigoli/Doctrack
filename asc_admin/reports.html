@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASC DocTrack — Reports</title>
+<link rel="stylesheet" href="css/main.css">
+<style>
+@media print {
+  .sidebar, .topbar, .topbar-actions, .no-print { display:none !important; }
+  .main-wrap { margin-left:0 !important; }
+  .page-content { padding:0 !important; }
+  .card { box-shadow:none !important; border:1px solid #ddd !important; page-break-inside:avoid; }
+}
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-brand"><div class="sidebar-logo">ASC</div><div><div class="sidebar-name">DocTrack</div><div class="sidebar-ver">Admin v1.0</div></div></div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">Main</div>
+      <a class="nav-item" href="index.html"><span class="nav-icon">📊</span> Dashboard</a>
+      <a class="nav-item" href="documents.html"><span class="nav-icon">📁</span> Documents</a>
+      <div class="nav-section">Manage</div>
+      <a class="nav-item" href="users.html"><span class="nav-icon">👥</span> Users</a>
+      <a class="nav-item" href="offices.html"><span class="nav-icon">🏢</span> Offices</a>
+      <a class="nav-item" href="ai.html"><span class="nav-icon">🤖</span> AI Classifier</a>
+      <div class="nav-section">System</div>
+      <a class="nav-item active" href="reports.html"><span class="nav-icon">📈</span> Reports</a>
+    </nav>
+    <div class="sidebar-user">
+      <div class="user-avatar" id="user-avatar">A</div>
+      <div><div class="user-name" id="user-name">Admin</div><div class="user-role" id="user-role">admin</div></div>
+      <span class="logout-btn" onclick="Auth.logout()">⏻</span>
+    </div>
+  </aside>
+
+  <div class="main-wrap">
+    <header class="topbar">
+      <div><div class="topbar-title">Reports</div><div class="topbar-sub">System performance & document analytics</div></div>
+      <div class="topbar-actions no-print">
+        <button class="btn btn-secondary btn-sm" onclick="window.print()">🖨 Print Report</button>
+        <button class="btn btn-secondary btn-sm" onclick="loadReport()">↻ Refresh</button>
+      </div>
+    </header>
+
+    <main class="page-content">
+
+      <!-- Print header (only visible on print) -->
+      <div style="display:none" id="print-header">
+        <h1 style="font-size:20px;font-weight:800">ASC DocTrack — System Report</h1>
+        <p style="font-size:13px;color:#666">Apayao State College – Luna Campus · Generated: <span id="report-date"></span></p>
+        <hr style="margin:12px 0">
+      </div>
+
+      <!-- Summary stats -->
+      <div class="stat-grid" id="report-stats">
+        <div class="stat-tile"><div class="skeleton sk-row sk-sm"></div><div class="skeleton sk-row sk-wide" style="margin-top:8px"></div></div>
+        <div class="stat-tile"><div class="skeleton sk-row sk-sm"></div><div class="skeleton sk-row sk-wide" style="margin-top:8px"></div></div>
+        <div class="stat-tile"><div class="skeleton sk-row sk-sm"></div><div class="skeleton sk-row sk-wide" style="margin-top:8px"></div></div>
+        <div class="stat-tile"><div class="skeleton sk-row sk-sm"></div><div class="skeleton sk-row sk-wide" style="margin-top:8px"></div></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px">
+
+        <!-- Status distribution -->
+        <div class="card">
+          <div class="card-header"><span class="card-title">📊 Status Distribution</span></div>
+          <div class="card-body" id="status-dist"><div class="skeleton sk-row sk-wide"></div></div>
+        </div>
+
+        <!-- Document type breakdown -->
+        <div class="card">
+          <div class="card-header"><span class="card-title">🤖 AI Classification Breakdown</span></div>
+          <div class="card-body" id="type-dist"><div class="skeleton sk-row sk-wide"></div></div>
+        </div>
+
+      </div>
+
+      <!-- Office performance table -->
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-header"><span class="card-title">🏢 Office Performance</span></div>
+        <div class="card-body" style="padding:0">
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead><tr><th>Office</th><th>Documents Held</th><th>Share (%)</th><th>Load</th></tr></thead>
+              <tbody id="office-perf"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Daily trend -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">📅 Daily Submission Trend (last 14 days)</span></div>
+        <div class="card-body" id="daily-trend"><div class="skeleton sk-row sk-wide"></div></div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="toast-container"></div>
+<script src="js/api.js"></script>
+<script src="js/auth.js"></script>
+<script>
+Auth.require();
+const u = Auth.getUser();
+if (u) {
+  document.getElementById('user-name').textContent   = u.first_name || u.username;
+  document.getElementById('user-role').textContent   = u.role;
+  document.getElementById('user-avatar').textContent = (u.first_name?.[0] || u.username[0]).toUpperCase();
+}
+document.getElementById('report-date').textContent = new Date().toLocaleString('en-PH');
+
+const STATUS_META = [
+  { key:'pending',   label:'Pending',   color:'#F59E0B' },
+  { key:'in_review', label:'In Review', color:'#4895EF' },
+  { key:'approved',  label:'Approved',  color:'#40916C' },
+  { key:'completed', label:'Completed', color:'#16A34A' },
+  { key:'rejected',  label:'Rejected',  color:'#E63946' },
+  { key:'returned',  label:'Returned',  color:'#F4A261' },
+];
+
+async function loadReport() {
+  try {
+    const sum   = await API.summary();
+    const total = sum.total || 0;
+    const byS   = sum.by_status || {};
+
+    // Stats
+    document.getElementById('report-stats').innerHTML = `
+      <div class="stat-tile" style="border-left-color:#1B4332"><div class="stat-val">${total}</div><div class="stat-label">Total Documents</div></div>
+      <div class="stat-tile" style="border-left-color:#40916C"><div class="stat-val">${byS.completed||0}</div><div class="stat-label">Completed</div></div>
+      <div class="stat-tile" style="border-left-color:#F59E0B"><div class="stat-val">${byS.pending||0}</div><div class="stat-label">Still Pending</div></div>
+      <div class="stat-tile" style="border-left-color:#F4A261"><div class="stat-val">${sum.avg_processing_hrs!=null?sum.avg_processing_hrs+'h':'—'}</div><div class="stat-label">Avg Processing Time</div></div>`;
+
+    // Status distribution
+    document.getElementById('status-dist').innerHTML = STATUS_META.map(s => {
+      const count = byS[s.key] || 0;
+      const pct   = total ? Math.round(count/total*100) : 0;
+      return `
+        <div style="margin-bottom:12px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <span style="font-size:13px;color:var(--text-secondary)">${s.label}</span>
+            <span style="font-size:13px;font-weight:700">${count} <span class="text-muted">(${pct}%)</span></span>
+          </div>
+          <div class="progress-bar"><div class="progress-fill" style="width:${pct}%;background:${s.color}"></div></div>
+        </div>`;}).join('');
+
+    // AI type breakdown
+    const labels = sum.by_ai_label || [];
+    const maxL   = Math.max(...labels.map(l=>l.count), 1);
+    document.getElementById('type-dist').innerHTML = labels.length
+      ? labels.map(l => `
+          <div class="bar-row" style="margin-bottom:10px">
+            <span class="bar-label">${l.ai_label}</span>
+            <div class="bar-track"><div class="bar-fill" style="width:${Math.round(l.count/maxL*100)}%"></div></div>
+            <span class="bar-count">${l.count}</span>
+          </div>`).join('')
+      : '<div class="empty-state"><div class="empty-icon">🤖</div><div class="empty-title">No AI data yet</div></div>';
+
+    // Office performance
+    const offices = sum.office_workload || [];
+    const maxOff  = Math.max(...offices.map(o=>o.count), 1);
+    document.getElementById('office-perf').innerHTML = offices.length
+      ? offices.map(o => {
+          const pct = total ? Math.round(o.count/total*100) : 0;
+          const load = o.count/maxOff;
+          const loadColor = load > .7 ? '#E63946' : load > .4 ? '#F4A261' : '#40916C';
+          return `
+            <tr>
+              <td style="font-weight:600">${o.office}</td>
+              <td style="font-weight:700">${o.count}</td>
+              <td>${pct}%</td>
+              <td style="width:160px">
+                <div class="progress-bar"><div class="progress-fill" style="width:${Math.round(load*100)}%;background:${loadColor}"></div></div>
+              </td>
+            </tr>`;}).join('')
+      : '<tr><td colspan="4"><div class="empty-state"><div class="empty-title">No office data</div></div></td></tr>';
+
+    // Daily trend
+    const trend = sum.daily_trend || [];
+    const maxT  = Math.max(...trend.map(t=>t.count), 1);
+    document.getElementById('daily-trend').innerHTML = trend.length
+      ? `<div style="display:flex;align-items:flex-end;gap:6px;height:80px;padding-bottom:4px">
+          ${trend.map(t => {
+            const h = Math.max(Math.round((t.count/maxT)*72), 4);
+            return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+              <span style="font-size:10px;color:var(--text-muted);font-weight:600">${t.count}</span>
+              <div style="width:100%;height:${h}px;background:var(--green-500);border-radius:3px 3px 0 0;opacity:.85"></div>
+              <span style="font-size:10px;color:var(--text-muted);white-space:nowrap">${t.day?.slice(5)||''}</span>
+            </div>`;}).join('')}
+        </div>`
+      : '<div class="empty-state"><div class="empty-icon">📅</div><div class="empty-title">No trend data yet</div></div>';
+
+  } catch(e) { toast('Failed to load report: '+e.message,'error'); }
+}
+
+loadReport();
+</script>
+</body>
+</html>

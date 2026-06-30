@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASC DocTrack — Users</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-brand"><div class="sidebar-logo">ASC</div><div><div class="sidebar-name">DocTrack</div><div class="sidebar-ver">Admin v1.0</div></div></div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">Main</div>
+      <a class="nav-item" href="index.html"><span class="nav-icon">📊</span> Dashboard</a>
+      <a class="nav-item" href="documents.html"><span class="nav-icon">📁</span> Documents</a>
+      <div class="nav-section">Manage</div>
+      <a class="nav-item active" href="users.html"><span class="nav-icon">👥</span> Users</a>
+      <a class="nav-item" href="offices.html"><span class="nav-icon">🏢</span> Offices</a>
+      <a class="nav-item" href="ai.html"><span class="nav-icon">🤖</span> AI Classifier</a>
+      <div class="nav-section">System</div>
+      <a class="nav-item" href="reports.html"><span class="nav-icon">📈</span> Reports</a>
+    </nav>
+    <div class="sidebar-user">
+      <div class="user-avatar" id="user-avatar">A</div>
+      <div><div class="user-name" id="user-name">Admin</div><div class="user-role" id="user-role">admin</div></div>
+      <span class="logout-btn" onclick="Auth.logout()">⏻</span>
+    </div>
+  </aside>
+
+  <div class="main-wrap">
+    <header class="topbar">
+      <div><div class="topbar-title">Users</div><div class="topbar-sub">Manage system accounts</div></div>
+      <div class="topbar-actions">
+        <button class="btn btn-primary btn-sm" onclick="openModal('add-user-modal')">＋ Add User</button>
+        <button class="btn btn-secondary btn-sm" onclick="loadUsers()">↻ Refresh</button>
+      </div>
+    </header>
+
+    <main class="page-content">
+      <div class="filter-bar">
+        <div class="search-input" style="max-width:280px">
+          <input id="search" class="form-input" placeholder="Search users…" oninput="debounceLoad()">
+        </div>
+        <select id="filter-role" class="form-select" style="width:160px" onchange="loadUsers()">
+          <option value="">All Roles</option>
+          <option value="superadmin">Super Admin</option>
+          <option value="records_officer">Records Officer</option>
+          <option value="program_chair">Program Chair</option>
+          <option value="faculty">Faculty</option>
+        </select>
+        <select id="filter-office" class="form-select" style="width:180px" onchange="loadUsers()">
+          <option value="">All Offices</option>
+        </select>
+      </div>
+
+      <div class="card">
+        <div class="card-body" style="padding:0">
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead><tr><th>Name</th><th>Username</th><th>Email</th><th>Role</th><th>Office</th><th>Status</th></tr></thead>
+              <tbody id="users-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card-footer"><span id="users-count" class="text-muted">Loading…</span></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- Add User Modal -->
+<div class="modal-overlay hidden" id="add-user-modal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span class="modal-title">Add New User</span>
+      <button class="modal-close" onclick="closeModal('add-user-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="add-user-error" class="alert alert-danger hidden"></div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">First Name</label><input id="u-fname" class="form-input" placeholder="Juan"></div>
+        <div class="form-group"><label class="form-label">Last Name</label><input id="u-lname" class="form-input" placeholder="Dela Cruz"></div>
+      </div>
+      <div class="form-group"><label class="form-label">Username *</label><input id="u-username" class="form-input" placeholder="jdelacruz"></div>
+      <div class="form-group"><label class="form-label">Email</label><input id="u-email" class="form-input" type="email" placeholder="jdelacruz@asc.edu.ph"></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Role *</label>
+          <select id="u-role" class="form-select">
+            <option value="faculty">Faculty</option>
+            <option value="program_chair">Program Chair</option>
+            <option value="records_officer">Records Officer</option>
+            <option value="superadmin">Super Admin</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Office</label>
+          <select id="u-office" class="form-select"><option value="">— Select Office —</option></select>
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Phone</label><input id="u-phone" class="form-input" placeholder="09XX-XXX-XXXX"></div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Password *</label><input id="u-pass" class="form-input" type="password" placeholder="Min 8 characters"></div>
+        <div class="form-group"><label class="form-label">Confirm Password *</label><input id="u-pass2" class="form-input" type="password" placeholder="Repeat password"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('add-user-modal')">Cancel</button>
+      <button class="btn btn-primary" id="add-user-btn" onclick="addUser()"><span class="btn-text">Create User</span><span class="btn-spinner hidden">●●●</span></button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+<script src="js/api.js"></script>
+<script src="js/auth.js"></script>
+<script>
+const ROLE_LABELS = {
+  superadmin:      'Super Admin',
+  records_officer: 'Records Officer',
+  program_chair:   'Program Chair',
+  faculty:         'Faculty',
+};
+
+const ROLE_COLORS = {
+  superadmin:      'background:#1B4332;color:#fff',
+  records_officer: 'background:#1e3a8a;color:#fff',
+  program_chair:   'background:#92400e;color:#fff',
+  faculty:         'background:#374151;color:#fff',
+};
+
+function roleBadge(role) {
+  const label = ROLE_LABELS[role] || role;
+  const style = ROLE_COLORS[role] || 'background:#e5e7eb;color:#374151';
+  return `<span style="padding:3px 10px;border-radius:99px;font-size:11px;font-weight:600;${style}">${label}</span>`;
+}
+const u = Auth.getUser();
+if (u) {
+  document.getElementById('user-name').textContent   = u.first_name || u.username;
+  document.getElementById('user-role').textContent   = u.role;
+  document.getElementById('user-avatar').textContent = (u.first_name?.[0] || u.username[0]).toUpperCase();
+}
+
+let debTimer, offices = [];
+
+async function init() {
+  try {
+    const data = await API.offices();
+    offices = data.results || data;
+    const offSel  = document.getElementById('filter-office');
+    const uOffSel = document.getElementById('u-office');
+    offices.forEach(o => {
+      offSel.innerHTML  += `<option value="${o.id}">${o.name}</option>`;
+      uOffSel.innerHTML += `<option value="${o.id}">${o.name}</option>`;
+    });
+  } catch (e) {
+    toast('Could not load offices: ' + e.message, 'error');
+  }
+  loadUsers();
+}
+
+function debounceLoad() { clearTimeout(debTimer); debTimer = setTimeout(loadUsers, 400); }
+
+async function loadUsers() {
+  const body = document.getElementById('users-body');
+  body.innerHTML = skeletonRows(5, 6);
+  const params = {};
+  const search = document.getElementById('search').value.trim();
+  const role   = document.getElementById('filter-role').value;
+  const office = document.getElementById('filter-office').value;
+  if (search) params.search  = search;
+  if (role)   params.role    = role;
+  if (office) params.office  = office;
+  try {
+    const data  = await API.users(params);
+    const users = data.results || data;
+    document.getElementById('users-count').textContent = `${users.length} user${users.length!==1?'s':''}`;
+    body.innerHTML = users.length ? users.map(u => `
+      <tr>
+        <td>
+          <div style="display:flex;align-items:center;gap:10px">
+            <div style="width:32px;height:32px;border-radius:50%;background:var(--green-900);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;flex-shrink:0">
+              ${(u.first_name?.[0]||u.username[0]).toUpperCase()}
+            </div>
+            <span style="font-weight:600">${u.full_name||u.username}</span>
+          </div>
+        </td>
+        <td style="font-family:monospace;font-size:12px;color:var(--text-muted)">@${u.username}</td>
+        <td style="font-size:13px">${u.email||'—'}</td>
+        <td>${roleBadge(u.role)}</td>
+        <td style="font-size:13px">${u.office?.name||'—'}</td>
+        <td><span class="badge ${u.is_active?'badge-approved':'badge-rejected'}">${u.is_active?'Active':'Inactive'}</span></td>
+      </tr>`).join('')
+    : '<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">👥</div><div class="empty-title">No users found</div></div></td></tr>';
+  } catch(e) { toast('Load failed: '+e.message,'error'); }
+}
+
+async function addUser() {
+  const errEl = document.getElementById('add-user-error');
+  const btn   = document.getElementById('add-user-btn');
+  errEl.classList.add('hidden');
+  const payload = {
+    first_name: document.getElementById('u-fname').value.trim(),
+    last_name:  document.getElementById('u-lname').value.trim(),
+    username:   document.getElementById('u-username').value.trim(),
+    email:      document.getElementById('u-email').value.trim(),
+    role:       document.getElementById('u-role').value,
+    office_id:  document.getElementById('u-office').value || undefined,
+    phone:      document.getElementById('u-phone').value.trim(),
+    password:   document.getElementById('u-pass').value,
+    password2:  document.getElementById('u-pass2').value,
+  };
+  if (!payload.username || !payload.password) { errEl.textContent='Username and password required.'; errEl.classList.remove('hidden'); return; }
+  if (payload.password !== payload.password2) { errEl.textContent='Passwords do not match.'; errEl.classList.remove('hidden'); return; }
+  btn.disabled=true; btn.querySelector('.btn-text').classList.add('hidden'); btn.querySelector('.btn-spinner').classList.remove('hidden');
+  try {
+    await API.register(payload);
+    toast('User created successfully!','success');
+    closeModal('add-user-modal');
+    loadUsers();
+  } catch(e) { errEl.textContent=e.message; errEl.classList.remove('hidden'); }
+  finally { btn.disabled=false; btn.querySelector('.btn-text').classList.remove('hidden'); btn.querySelector('.btn-spinner').classList.add('hidden'); }
+}
+
+init();
+</script>
+</body>
+</html>

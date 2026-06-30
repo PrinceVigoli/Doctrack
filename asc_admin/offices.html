@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASC DocTrack — Offices</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-brand"><div class="sidebar-logo">ASC</div><div><div class="sidebar-name">DocTrack</div><div class="sidebar-ver">Admin v1.0</div></div></div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">Main</div>
+      <a class="nav-item" href="index.html"><span class="nav-icon">📊</span> Dashboard</a>
+      <a class="nav-item" href="documents.html"><span class="nav-icon">📁</span> Documents</a>
+      <div class="nav-section">Manage</div>
+      <a class="nav-item" href="users.html"><span class="nav-icon">👥</span> Users</a>
+      <a class="nav-item active" href="offices.html"><span class="nav-icon">🏢</span> Offices</a>
+      <a class="nav-item" href="ai.html"><span class="nav-icon">🤖</span> AI Classifier</a>
+      <div class="nav-section">System</div>
+      <a class="nav-item" href="reports.html"><span class="nav-icon">📈</span> Reports</a>
+    </nav>
+    <div class="sidebar-user">
+      <div class="user-avatar" id="user-avatar">A</div>
+      <div><div class="user-name" id="user-name">Admin</div><div class="user-role" id="user-role">admin</div></div>
+      <span class="logout-btn" onclick="Auth.logout()">⏻</span>
+    </div>
+  </aside>
+
+  <div class="main-wrap">
+    <header class="topbar">
+      <div><div class="topbar-title">Offices</div><div class="topbar-sub">Manage ASC offices and departments</div></div>
+      <div class="topbar-actions">
+        <button class="btn btn-primary btn-sm" onclick="openModal('office-modal'); resetForm()">＋ Add Office</button>
+        <button class="btn btn-secondary btn-sm" onclick="loadOffices()">↻ Refresh</button>
+      </div>
+    </header>
+
+    <main class="page-content">
+      <div class="card">
+        <div class="card-body" style="padding:0">
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Code</th>
+                  <th>Office Name</th>
+                  <th>Description</th>
+                  <th>Records Office</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="offices-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card-footer"><span id="offices-count" class="text-muted">Loading…</span></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- Add / Edit Office Modal -->
+<div class="modal-overlay hidden" id="office-modal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span class="modal-title" id="modal-title">Add Office</span>
+      <button class="modal-close" onclick="closeModal('office-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="office-error" class="alert alert-danger hidden"></div>
+      <input type="hidden" id="o-id">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Office Code *</label>
+          <input id="o-code" class="form-input" placeholder="e.g. RO" style="text-transform:uppercase">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Office Name *</label>
+          <input id="o-name" class="form-input" placeholder="e.g. Records Office">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Description</label>
+        <input id="o-desc" class="form-input" placeholder="Optional short description">
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:10px;margin-top:4px">
+        <input type="checkbox" id="o-records" style="width:16px;height:16px;cursor:pointer">
+        <label for="o-records" class="form-label" style="margin:0;cursor:pointer">
+          This is the <strong>Records Office</strong>
+          <span style="font-weight:400;color:var(--text-secondary)"> — members get admin access</span>
+        </label>
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:10px" id="active-row">
+        <input type="checkbox" id="o-active" checked style="width:16px;height:16px;cursor:pointer">
+        <label for="o-active" class="form-label" style="margin:0;cursor:pointer">Active</label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('office-modal')">Cancel</button>
+      <button class="btn btn-primary" id="save-office-btn" onclick="saveOffice()">
+        <span class="btn-text">Save Office</span>
+        <span class="btn-spinner hidden">●●●</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm Delete Modal -->
+<div class="modal-overlay hidden" id="delete-modal">
+  <div class="modal-box" style="max-width:400px">
+    <div class="modal-header">
+      <span class="modal-title">Delete Office</span>
+      <button class="modal-close" onclick="closeModal('delete-modal')">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="margin:0;color:var(--text-secondary)">
+        Are you sure you want to delete <strong id="delete-office-name"></strong>?
+        This cannot be undone and may affect users assigned to this office.
+      </p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('delete-modal')">Cancel</button>
+      <button class="btn" style="background:var(--red);color:#fff" id="confirm-delete-btn" onclick="confirmDelete()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+<script src="js/api.js"></script>
+<script src="js/auth.js"></script>
+<script>
+Auth.require();
+const u = Auth.getUser();
+if (u) {
+  document.getElementById('user-name').textContent   = u.first_name || u.username;
+  document.getElementById('user-role').textContent   = u.role;
+  document.getElementById('user-avatar').textContent = (u.first_name?.[0] || u.username[0]).toUpperCase();
+}
+
+let deleteTargetId = null;
+
+// ── Helpers ────────────────────────────────────────────────
+function openModal(id)  { document.getElementById(id).classList.remove('hidden'); }
+function closeModal(id) { document.getElementById(id).classList.add('hidden'); }
+
+function toast(msg, type = 'success') {
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+function skeletonRows(rows, cols) {
+  return Array.from({ length: rows }, () =>
+    `<tr>${Array.from({ length: cols }, () =>
+      `<td><div class="skeleton" style="height:14px;border-radius:4px"></div></td>`
+    ).join('')}</tr>`
+  ).join('');
+}
+
+function setLoading(btnId, loading) {
+  const btn = document.getElementById(btnId);
+  btn.querySelector('.btn-text').classList.toggle('hidden', loading);
+  btn.querySelector('.btn-spinner').classList.toggle('hidden', !loading);
+  btn.disabled = loading;
+}
+
+// ── Load offices ────────────────────────────────────────────
+async function loadOffices() {
+  const body = document.getElementById('offices-body');
+  body.innerHTML = skeletonRows(5, 6);
+  try {
+    const data    = await API.offices();
+    const offices = data.results || data;
+    document.getElementById('offices-count').textContent =
+      `${offices.length} office${offices.length !== 1 ? 's' : ''}`;
+
+    if (!offices.length) {
+      body.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);padding:32px">
+        No offices yet. Click <strong>＋ Add Office</strong> to create one.</td></tr>`;
+      return;
+    }
+
+    body.innerHTML = offices.map(o => `
+      <tr>
+        <td><span style="font-family:monospace;font-weight:700;color:var(--green-700)">${o.code}</span></td>
+        <td style="font-weight:600">${o.name}</td>
+        <td style="font-size:13px;color:var(--text-secondary)">${o.description || '—'}</td>
+        <td>${o.is_records_office
+          ? '<span class="badge badge-approved">✔ Yes</span>'
+          : '<span style="color:var(--text-muted);font-size:13px">—</span>'}</td>
+        <td><span class="badge ${o.is_active ? 'badge-approved' : 'badge-rejected'}">${o.is_active ? 'Active' : 'Inactive'}</span></td>
+        <td>
+          <button class="btn btn-secondary btn-sm" onclick='editOffice(${JSON.stringify(o)})' style="margin-right:6px">Edit</button>
+          <button class="btn btn-sm" style="background:var(--red-bg);color:var(--red)" onclick="promptDelete(${o.id}, '${o.name.replace(/'/g,"\\'")}')">Delete</button>
+        </td>
+      </tr>`).join('');
+  } catch(e) {
+    toast('Load failed: ' + e.message, 'error');
+    body.innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--red);padding:24px">Failed to load offices.</td></tr>`;
+  }
+}
+
+// ── Reset / open add form ───────────────────────────────────
+function resetForm() {
+  document.getElementById('modal-title').textContent = 'Add Office';
+  document.getElementById('save-office-btn').querySelector('.btn-text').textContent = 'Save Office';
+  document.getElementById('o-id').value      = '';
+  document.getElementById('o-code').value    = '';
+  document.getElementById('o-name').value    = '';
+  document.getElementById('o-desc').value    = '';
+  document.getElementById('o-records').checked = false;
+  document.getElementById('o-active').checked  = true;
+  document.getElementById('active-row').style.display = 'none'; // hide for new
+  document.getElementById('office-error').classList.add('hidden');
+}
+
+// ── Open edit form ──────────────────────────────────────────
+function editOffice(o) {
+  document.getElementById('modal-title').textContent = 'Edit Office';
+  document.getElementById('save-office-btn').querySelector('.btn-text').textContent = 'Update Office';
+  document.getElementById('o-id').value        = o.id;
+  document.getElementById('o-code').value      = o.code;
+  document.getElementById('o-name').value      = o.name;
+  document.getElementById('o-desc').value      = o.description || '';
+  document.getElementById('o-records').checked = o.is_records_office;
+  document.getElementById('o-active').checked  = o.is_active;
+  document.getElementById('active-row').style.display = 'flex';
+  document.getElementById('office-error').classList.add('hidden');
+  openModal('office-modal');
+}
+
+// ── Save (create or update) ─────────────────────────────────
+async function saveOffice() {
+  const id   = document.getElementById('o-id').value;
+  const code = document.getElementById('o-code').value.trim().toUpperCase();
+  const name = document.getElementById('o-name').value.trim();
+
+  if (!code || !name) {
+    const err = document.getElementById('office-error');
+    err.textContent = 'Code and Office Name are required.';
+    err.classList.remove('hidden');
+    return;
+  }
+
+  const payload = {
+    code,
+    name,
+    description:      document.getElementById('o-desc').value.trim(),
+    is_records_office: document.getElementById('o-records').checked,
+    is_active:         id ? document.getElementById('o-active').checked : true,
+  };
+
+  setLoading('save-office-btn', true);
+  try {
+    if (id) {
+      await apiFetch(`/auth/offices/${id}/`, { method: 'PATCH', body: JSON.stringify(payload) });
+      toast('Office updated.');
+    } else {
+      await apiFetch('/auth/offices/', { method: 'POST', body: JSON.stringify(payload) });
+      toast('Office created.');
+    }
+    closeModal('office-modal');
+    loadOffices();
+  } catch(e) {
+    const err = document.getElementById('office-error');
+    err.textContent = e.message;
+    err.classList.remove('hidden');
+  } finally {
+    setLoading('save-office-btn', false);
+  }
+}
+
+// ── Delete ──────────────────────────────────────────────────
+function promptDelete(id, name) {
+  deleteTargetId = id;
+  document.getElementById('delete-office-name').textContent = name;
+  openModal('delete-modal');
+}
+
+async function confirmDelete() {
+  const btn = document.getElementById('confirm-delete-btn');
+  btn.disabled = true;
+  btn.textContent = '●●●';
+  try {
+    await apiFetch(`/auth/offices/${deleteTargetId}/`, { method: 'DELETE' });
+    toast('Office deleted.');
+    closeModal('delete-modal');
+    loadOffices();
+  } catch(e) {
+    toast('Delete failed: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Delete';
+  }
+}
+
+// Close modals on backdrop click
+document.querySelectorAll('.modal-overlay').forEach(overlay => {
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay) overlay.classList.add('hidden');
+  });
+});
+
+loadOffices();
+</script>
+</body>
+</html>

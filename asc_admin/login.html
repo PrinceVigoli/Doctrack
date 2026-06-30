@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASC DocTrack — Admin</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body class="login-page">
+<div class="login-wrap">
+  <div class="login-brand">
+    <div class="brand-logo">ASC</div>
+    <div class="brand-text">
+      <span class="brand-name">DocTrack</span>
+      <span class="brand-sub">Admin Panel</span>
+    </div>
+  </div>
+  <div class="login-card">
+    <h1 class="login-title">Sign in</h1>
+    <p class="login-hint">Apayao State College — Luna Campus</p>
+    <div id="login-error" class="alert alert-danger hidden"></div>
+    <div class="form-group">
+      <label class="form-label">Username</label>
+      <input id="username" type="text" class="form-input" placeholder="Enter username" autocomplete="username">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Password</label>
+      <input id="password" type="password" class="form-input" placeholder="Enter password" autocomplete="current-password">
+    </div>
+    <button id="login-btn" class="btn btn-primary btn-full" onclick="handleLogin()">
+      <span class="btn-text">Sign In</span>
+      <span class="btn-spinner hidden">●●●</span>
+    </button>
+  </div>
+  <p class="login-footer">ASC DocTrack v1.0 · For official use only</p>
+</div>
+<script src="js/api.js"></script>
+<script src="js/auth.js"></script>
+<script>
+  // Redirect if already logged in
+  if (localStorage.getItem('access_token')) window.location.href = 'index.html';
+
+  async function handleLogin() {
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+    const errEl    = document.getElementById('login-error');
+    const btn      = document.getElementById('login-btn');
+    errEl.classList.add('hidden');
+    if (!username || !password) { showError('Please enter username and password.'); return; }
+    setLoading(btn, true);
+    try {
+      await Auth.login(username, password);
+      window.location.href = 'index.html';
+    } catch (e) {
+      showError(e.message || 'Invalid credentials.');
+    } finally { setLoading(btn, false); }
+  }
+
+  function showError(msg) {
+    const el = document.getElementById('login-error');
+    el.textContent = msg; el.classList.remove('hidden');
+  }
+  function setLoading(btn, on) {
+    btn.querySelector('.btn-text').classList.toggle('hidden', on);
+    btn.querySelector('.btn-spinner').classList.toggle('hidden', !on);
+    btn.disabled = on;
+  }
+  document.getElementById('password').addEventListener('keydown', e => { if (e.key === 'Enter') handleLogin(); });
+</script>
+</body>
+</html>

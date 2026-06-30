@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ASC DocTrack — Documents</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-brand"><div class="sidebar-logo">ASC</div><div><div class="sidebar-name">DocTrack</div><div class="sidebar-ver">Admin v1.0</div></div></div>
+    <nav class="sidebar-nav">
+      <div class="nav-section">Main</div>
+      <a class="nav-item" href="index.html"><span class="nav-icon">📊</span> Dashboard</a>
+      <a class="nav-item active" href="documents.html"><span class="nav-icon">📁</span> Documents</a>
+      <div class="nav-section">Manage</div>
+      <a class="nav-item" href="users.html"><span class="nav-icon">👥</span> Users</a>
+      <a class="nav-item" href="offices.html"><span class="nav-icon">🏢</span> Offices</a>
+      <a class="nav-item" href="ai.html"><span class="nav-icon">🤖</span> AI Classifier</a>
+      <div class="nav-section">System</div>
+      <a class="nav-item" href="reports.html"><span class="nav-icon">📈</span> Reports</a>
+    </nav>
+    <div class="sidebar-user">
+      <div class="user-avatar" id="user-avatar">A</div>
+      <div><div class="user-name" id="user-name">Admin</div><div class="user-role" id="user-role">admin</div></div>
+      <span class="logout-btn" onclick="Auth.logout()">⏻</span>
+    </div>
+  </aside>
+
+  <div class="main-wrap">
+    <header class="topbar">
+      <div><div class="topbar-title">Documents</div><div class="topbar-sub">All submitted documents</div></div>
+      <div class="topbar-actions">
+        <button class="btn btn-secondary btn-sm" onclick="loadDocs()">↻ Refresh</button>
+      </div>
+    </header>
+
+    <main class="page-content">
+      <!-- Filters -->
+      <div class="filter-bar">
+        <div class="search-input" style="max-width:300px">
+          <input id="search" class="form-input" placeholder="Search by title or tracking no..." oninput="debounceLoad()">
+        </div>
+        <select id="filter-status" class="form-select" style="width:150px" onchange="loadDocs()">
+          <option value="">All Statuses</option>
+          <option value="pending">Pending</option>
+          <option value="in_review">In Review</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+          <option value="returned">Returned</option>
+          <option value="completed">Completed</option>
+        </select>
+        <select id="filter-priority" class="form-select" style="width:140px" onchange="loadDocs()">
+          <option value="">All Priorities</option>
+          <option value="urgent">Urgent</option>
+          <option value="high">High</option>
+          <option value="normal">Normal</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+
+      <!-- Table -->
+      <div class="card">
+        <div class="card-body" style="padding:0">
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Tracking No.</th><th>Title</th><th>Type / AI Label</th>
+                  <th>Status</th><th>Priority</th><th>Current Office</th>
+                  <th>Submitted</th><th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="docs-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card-footer" style="display:flex;align-items:center;justify-content:space-between">
+          <span id="docs-count" class="text-muted">Loading…</span>
+          <div class="pagination" id="pagination"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- Document detail modal -->
+<div class="modal-overlay hidden" id="doc-modal">
+  <div class="modal-box" style="max-width:680px">
+    <div class="modal-header">
+      <span class="modal-title" id="modal-track">—</span>
+      <button class="modal-close" onclick="closeModal('doc-modal')">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body">Loading…</div>
+    <div class="modal-footer">
+      <select id="modal-status-sel" class="form-select" style="width:160px">
+        <option value="">Change status…</option>
+        <option value="in_review">In Review</option>
+        <option value="approved">Approved</option>
+        <option value="rejected">Rejected</option>
+        <option value="returned">Returned</option>
+        <option value="completed">Completed</option>
+      </select>
+      <input id="modal-note" class="form-input" style="flex:1" placeholder="Note (optional)">
+      <button class="btn btn-primary" onclick="updateDocStatus()">Update</button>
+      <button class="btn btn-secondary" onclick="closeModal('doc-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+<script src="js/api.js"></script>
+<script src="js/auth.js"></script>
+<script>
+Auth.require();
+const u = Auth.getUser();
+if (u) {
+  document.getElementById('user-name').textContent   = u.first_name || u.username;
+  document.getElementById('user-role').textContent   = u.role;
+  document.getElementById('user-avatar').textContent = (u.first_name?.[0] || u.username[0]).toUpperCase();
+}
+
+let currentPage = 1, totalPages = 1, activeDocId = null;
+let debTimer;
+function debounceLoad() { clearTimeout(debTimer); debTimer = setTimeout(() => { currentPage=1; loadDocs(); }, 400); }
+
+async function loadDocs() {
+  const body = document.getElementById('docs-body');
+  body.innerHTML = skeletonRows(6, 8);
+  const params = { page: currentPage };
+  const search = document.getElementById('search').value.trim();
+  const status = document.getElementById('filter-status').value;
+  const prio   = document.getElementById('filter-priority').value;
+  if (search) params.search  = search;
+  if (status) params.status  = status;
+  if (prio)   params.priority = prio;
+
+  try {
+    const data = await API.docs(params);
+    const docs = data.results || data;
+    const count = data.count || docs.length;
+    totalPages  = data.next || data.previous ? Math.ceil(count / 20) : 1;
+    document.getElementById('docs-count').textContent = `${count} document${count!==1?'s':''}`;
+
+    body.innerHTML = docs.length ? docs.map(d => `
+      <tr>
+        <td><span style="font-family:monospace;font-size:12px;color:var(--green-700)">${d.tracking_number}</span></td>
+        <td style="max-width:220px"><div class="truncate" style="font-weight:600">${d.title}</div></td>
+        <td>
+          <div style="font-size:12px">${d.doc_type?.name || '—'}</div>
+          ${d.ai_label ? `<div style="font-size:11px;color:var(--text-muted)">🤖 ${d.ai_label} (${Math.round((d.ai_confidence||0)*100)}%)</div>` : ''}
+        </td>
+        <td>${statusBadge(d.status)}</td>
+        <td>${priorityDot(d.priority)}</td>
+        <td style="font-size:12px">${d.current_office?.name||'—'}</td>
+        <td class="text-muted">${fmtDate(d.created_at)}</td>
+        <td>
+          <div class="actions">
+            <button class="btn btn-ghost btn-sm btn-icon" onclick="openDoc(${d.id})" title="View">👁</button>
+          </div>
+        </td>
+      </tr>`).join('')
+    : '<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><div class="empty-title">No documents found</div></div></td></tr>';
+
+    renderPagination(document.getElementById('pagination'), currentPage, totalPages, p => { currentPage = p; loadDocs(); });
+  } catch(e) { toast('Load failed: '+e.message,'error'); }
+}
+
+async function openDoc(id) {
+  activeDocId = id;
+  openModal('doc-modal');
+  document.getElementById('modal-body').innerHTML = '<div class="skeleton sk-row sk-wide"></div><div class="skeleton sk-row sk-mid" style="margin-top:8px"></div>';
+  try {
+    const d = await API.doc(id);
+    document.getElementById('modal-track').textContent = d.tracking_number;
+    document.getElementById('modal-body').innerHTML = `
+      <h2 style="font-size:18px;font-weight:800;margin-bottom:8px">${d.title}</h2>
+      ${d.description ? `<p style="color:var(--text-secondary);margin-bottom:14px;font-size:13px">${d.description}</p>` : ''}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
+        <div><div class="text-muted" style="font-size:11px;font-weight:600;margin-bottom:3px">STATUS</div>${statusBadge(d.status)}</div>
+        <div><div class="text-muted" style="font-size:11px;font-weight:600;margin-bottom:3px">PRIORITY</div>${priorityDot(d.priority)}</div>
+        <div><div class="text-muted" style="font-size:11px;font-weight:600;margin-bottom:3px">SUBMITTED BY</div><span style="font-size:13px">${d.submitted_by?.full_name||'—'}</span></div>
+        <div><div class="text-muted" style="font-size:11px;font-weight:600;margin-bottom:3px">CURRENT OFFICE</div><span style="font-size:13px">${d.current_office?.name||'—'}</span></div>
+        <div><div class="text-muted" style="font-size:11px;font-weight:600;margin-bottom:3px">DOCUMENT TYPE</div><span style="font-size:13px">${d.doc_type?.name||'—'}</span></div>
+        <div><div class="text-muted" style="font-size:11px;font-weight:600;margin-bottom:3px">SUBMITTED</div><span style="font-size:13px">${fmtDate(d.created_at)}</span></div>
+      </div>
+      ${d.ai_label ? `
+        <div style="background:var(--green-50);border-radius:var(--radius-md);padding:12px;margin-bottom:16px">
+          <div style="font-size:12px;font-weight:700;color:var(--green-700);margin-bottom:6px">🤖 AI Classification</div>
+          <div style="font-size:15px;font-weight:700;color:var(--green-900)">${d.ai_label}</div>
+          ${confBar(d.ai_confidence)}
+        </div>` : ''}
+      <div style="font-size:14px;font-weight:700;margin-bottom:10px">Tracking Timeline</div>
+      <div class="timeline">
+        ${(d.logs||[]).map(l=>`
+          <div class="tl-item">
+            <div class="tl-dot"></div>
+            <div class="tl-action">${l.action.replace('_',' ')}</div>
+            <div class="tl-meta">by ${l.actor?.full_name||'—'} · ${fmtDateTime(l.timestamp)}</div>
+            ${l.from_office ? `<div class="tl-meta">${l.from_office.name} → ${l.to_office?.name||'—'}</div>` : ''}
+            ${l.note ? `<div class="tl-note">"${l.note}"</div>` : ''}
+          </div>`).join('') || '<div class="text-muted" style="font-size:13px">No tracking history.</div>'}
+      </div>`;
+  } catch(e) { document.getElementById('modal-body').textContent = 'Error: '+e.message; }
+}
+
+async function updateDocStatus() {
+  if (!activeDocId) return;
+  const status = document.getElementById('modal-status-sel').value;
+  const note   = document.getElementById('modal-note').value;
+  if (!status) { toast('Select a status first.','error'); return; }
+  try {
+    await API.docStatus(activeDocId, status, note);
+    toast('Status updated to: '+status,'success');
+    closeModal('doc-modal');
+    loadDocs();
+  } catch(e) { toast('Update failed: '+e.message,'error'); }
+}
+
+loadDocs();
+</script>
+</body>
+</html>
