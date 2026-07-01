@@ -79,16 +79,12 @@ class DocumentTrackingConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def check_access(self, user, tracking_number):
+        # SECURITY: same ownership/office-aware check used by DocumentViewSet
+        # and DocumentQRView — see Document.objects.visible_to().
         from documents.models import Document
-        try:
-            doc = Document.objects.get(tracking_number=tracking_number)
-            if user.is_records_admin or user.is_superadmin:
-                return True
-            if doc.confidentiality == Document.Confidentiality.RESTRICTED:
-                return False
-            return True
-        except Document.DoesNotExist:
-            return False
+        return Document.objects.visible_to(user).filter(
+            tracking_number=tracking_number
+        ).exists()
 
     @database_sync_to_async
     def get_tracking_history(self, tracking_number):

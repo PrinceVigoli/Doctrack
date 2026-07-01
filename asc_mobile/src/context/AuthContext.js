@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as secureStorage from '../utils/secureStorage';
 import { authAPI } from '../api/services';
 
 const AuthContext = createContext(null);
@@ -12,13 +12,13 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     (async () => {
       try {
-        const token = await AsyncStorage.getItem('access_token');
+        const token = await secureStorage.getItem('access_token');
         if (token) {
           const { data } = await authAPI.me();
           setUser(data);
         }
       } catch {
-        await AsyncStorage.multiRemove(['access_token', 'refresh_token']);
+        await secureStorage.multiRemove(['access_token', 'refresh_token']);
       } finally {
         setLoading(false);
       }
@@ -27,8 +27,8 @@ export function AuthProvider({ children }) {
 
   const login = async (username, password) => {
     const { data } = await authAPI.login(username, password);
-    await AsyncStorage.setItem('access_token',  data.access);
-    await AsyncStorage.setItem('refresh_token', data.refresh);
+    await secureStorage.setItem('access_token',  data.access);
+    await secureStorage.setItem('refresh_token', data.refresh);
     const me = await authAPI.me();
     setUser(me.data);
     return me.data;
@@ -36,10 +36,10 @@ export function AuthProvider({ children }) {
 
   const logout = async () => {
     try {
-      const refresh = await AsyncStorage.getItem('refresh_token');
+      const refresh = await secureStorage.getItem('refresh_token');
       if (refresh) await authAPI.logout(refresh);
     } catch {}
-    await AsyncStorage.multiRemove(['access_token', 'refresh_token']);
+    await secureStorage.multiRemove(['access_token', 'refresh_token']);
     setUser(null);
   };
 

@@ -1,0 +1,1530 @@
+diff --git a/asc_doctrack/accounts/serializers.py b/asc_doctrack/accounts/serializers.py
+index e00dcec..a9ad1d4 100644
+--- a/asc_doctrack/accounts/serializers.py
++++ b/asc_doctrack/accounts/serializers.py
+@@ -9,18 +9,22 @@ class OfficeSerializer(serializers.ModelSerializer):
+ 
+ 
+ class UserSerializer(serializers.ModelSerializer):
+-    office   = OfficeSerializer(read_only=True)
+-    office_id = serializers.PrimaryKeyRelatedField(
+-        queryset=Office.objects.all(), source='office', write_only=True, required=False)
++    office    = OfficeSerializer(read_only=True)
+     full_name = serializers.SerializerMethodField()
+ 
+     class Meta:
+         model  = User
+         fields = [
+             'id', 'username', 'email', 'first_name', 'last_name',
+-            'full_name', 'role', 'office', 'office_id', 'phone', 'avatar', 'is_active'
++            'full_name', 'role', 'office', 'phone', 'avatar', 'is_active'
+         ]
+-        read_only_fields = ['id']
++        # SECURITY: this serializer backs MeView, which any authenticated user
++        # can PATCH on themselves. role/is_active are privilege fields and
++        # office determines which documents a program_chair can see (see
++        # Document.objects.visible_to) — none of them may be self-editable.
++        # Office/role assignment happens only via RegisterSerializer, which is
++        # gated behind IsRecordsAdmin.
++        read_only_fields = ['id', 'role', 'is_active']
+ 
+     def get_full_name(self, obj):
+         return obj.get_full_name()
+diff --git a/asc_doctrack/accounts/tests.py b/asc_doctrack/accounts/tests.py
+index 7ce503c..b6ed2dc 100644
+--- a/asc_doctrack/accounts/tests.py
++++ b/asc_doctrack/accounts/tests.py
+@@ -1,3 +1,143 @@
++"""
++accounts/tests.py
++─────────────────
++Tests for Finding #1: Privilege escalation via PATCH /api/auth/me/
++
++Before the fix, `UserSerializer` exposed `role`, `is_active`, and `office_id`
++as writable fields on the MeView, letting any authenticated user self-promote.
++After the fix, those fields are in `read_only_fields` — PATCH requests that
++include them are silently ignored.
++"""
+ from django.test import TestCase
++from rest_framework import status
++from rest_framework.test import APITestCase, APIClient
++
++from accounts.models import User, Office
++
++
++# ── Helpers ───────────────────────────────────────────────────────────────────
++
++def make_office(name='Test Office', code='TST'):
++    return Office.objects.create(name=name, code=code)
++
++def make_user(username, role=User.Role.FACULTY, office=None, password='securepass123!'):
++    u = User.objects.create_user(username=username, password=password, role=role)
++    if office:
++        u.office = office
++        u.save()
++    return u
++
++
++# ── Tests ─────────────────────────────────────────────────────────────────────
++
++class MeViewPrivilegeEscalationTests(APITestCase):
++    """
++    PATCH /api/auth/me/ must not allow a user to write privilege-gated fields.
++    """
++
++    def setUp(self):
++        self.office_a = make_office('Dept A', 'DPTA')
++        self.office_b = make_office('Dept B', 'DPTB')
++        self.faculty  = make_user('faculty_user', role=User.Role.FACULTY, office=self.office_a)
++        self.client.force_authenticate(user=self.faculty)
++
++    # ── role escalation ───────────────────────────────────────────────────────
++
++    def test_faculty_cannot_self_promote_to_superadmin(self):
++        resp = self.client.patch('/api/auth/me/', {'role': 'superadmin'}, format='json')
++        self.assertIn(resp.status_code, [status.HTTP_200_OK, status.HTTP_400_BAD_REQUEST])
++        self.faculty.refresh_from_db()
++        self.assertEqual(self.faculty.role, User.Role.FACULTY,
++                         "role must remain 'faculty' after a self-promote attempt")
++
++    def test_faculty_cannot_self_promote_to_records_officer(self):
++        resp = self.client.patch('/api/auth/me/', {'role': 'records_officer'}, format='json')
++        self.assertIn(resp.status_code, [status.HTTP_200_OK, status.HTTP_400_BAD_REQUEST])
++        self.faculty.refresh_from_db()
++        self.assertEqual(self.faculty.role, User.Role.FACULTY)
++
++    def test_faculty_cannot_self_promote_to_program_chair(self):
++        resp = self.client.patch('/api/auth/me/', {'role': 'program_chair'}, format='json')
++        self.assertIn(resp.status_code, [status.HTTP_200_OK, status.HTTP_400_BAD_REQUEST])
++        self.faculty.refresh_from_db()
++        self.assertEqual(self.faculty.role, User.Role.FACULTY)
++
++    # ── is_active ─────────────────────────────────────────────────────────────
++
++    def test_faculty_cannot_self_deactivate(self):
++        resp = self.client.patch('/api/auth/me/', {'is_active': False}, format='json')
++        self.assertIn(resp.status_code, [status.HTTP_200_OK, status.HTTP_400_BAD_REQUEST])
++        self.faculty.refresh_from_db()
++        self.assertTrue(self.faculty.is_active,
++                        "is_active must not be writable via /api/auth/me/")
++
++    def test_faculty_cannot_self_activate_a_deactivated_account(self):
++        self.faculty.is_active = False
++        self.faculty.save()
++        self.client.patch('/api/auth/me/', {'is_active': True}, format='json')
++        self.faculty.refresh_from_db()
++        self.assertFalse(self.faculty.is_active,
++                         "is_active must not be writable via /api/auth/me/")
++
++    # ── office_id must not appear in the writable field set ───────────────────
++
++    def test_office_reassignment_ignored_on_me_endpoint(self):
++        """
++        office_id was removed from UserSerializer.fields entirely — the endpoint
++        must ignore it rather than reassigning the user's office.
++        """
++        original_office_id = self.faculty.office_id
++        self.client.patch('/api/auth/me/', {'office_id': self.office_b.pk}, format='json')
++        self.faculty.refresh_from_db()
++        self.assertEqual(self.faculty.office_id, original_office_id,
++                         "office_id must not be reassignable via /api/auth/me/")
++
++    # ── permitted edits still work ────────────────────────────────────────────
++
++    def test_faculty_can_update_phone(self):
++        resp = self.client.patch('/api/auth/me/', {'phone': '+639001234567'}, format='json')
++        self.assertEqual(resp.status_code, status.HTTP_200_OK)
++        self.faculty.refresh_from_db()
++        self.assertEqual(self.faculty.phone, '+639001234567')
++
++    def test_faculty_can_update_display_name(self):
++        resp = self.client.patch(
++            '/api/auth/me/',
++            {'first_name': 'Maria', 'last_name': 'Santos'},
++            format='json',
++        )
++        self.assertEqual(resp.status_code, status.HTTP_200_OK)
++        self.faculty.refresh_from_db()
++        self.assertEqual(self.faculty.first_name, 'Maria')
++        self.assertEqual(self.faculty.last_name, 'Santos')
++
++    # ── combined escalation attempt ───────────────────────────────────────────
++
++    def test_combined_escalation_payload_all_ignored(self):
++        """
++        A single PATCH that bundles role + is_active + office_id + a
++        legitimate field must silently drop the privilege fields while
++        still applying the legitimate one.
++        """
++        resp = self.client.patch(
++            '/api/auth/me/',
++            {
++                'role':      'superadmin',
++                'is_active': False,
++                'office_id': self.office_b.pk,
++                'phone':     '+639009876543',
++            },
++            format='json',
++        )
++        self.assertIn(resp.status_code, [status.HTTP_200_OK, status.HTTP_400_BAD_REQUEST])
++        self.faculty.refresh_from_db()
++        self.assertEqual(self.faculty.role,      User.Role.FACULTY,  "role unchanged")
++        self.assertTrue(self.faculty.is_active,                       "is_active unchanged")
++        self.assertEqual(self.faculty.office_id, self.office_a.pk,    "office unchanged")
++
++    # ── unauthenticated requests ──────────────────────────────────────────────
+ 
+-# Create your tests here.
++    def test_unauthenticated_me_returns_401(self):
++        anon_client = APIClient()
++        resp = anon_client.patch('/api/auth/me/', {'role': 'superadmin'}, format='json')
++        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+diff --git a/asc_doctrack/classifier/management/commands/train_classifier.py b/asc_doctrack/classifier/management/commands/train_classifier.py
+index a64c97c..27c1541 100644
+--- a/asc_doctrack/classifier/management/commands/train_classifier.py
++++ b/asc_doctrack/classifier/management/commands/train_classifier.py
+@@ -1,6 +1,7 @@
+ from django.core.management.base import BaseCommand
+ from pathlib import Path
+ import pickle
++import hashlib
+ 
+ class Command(BaseCommand):
+     help = 'Train the document AI classifier'
+@@ -26,9 +27,24 @@ class Command(BaseCommand):
+         with open(model_path, 'wb') as f:
+             pickle.dump(pipeline, f)
+ 
++        digest = hashlib.sha256()
++        with open(model_path, 'rb') as f:
++            for chunk in iter(lambda: f.read(1024 * 1024), b''):
++                digest.update(chunk)
++
+         self.stdout.write(self.style.SUCCESS(
+             f'Classifier trained on {len(texts)} samples → {model_path}'
+         ))
+         preds   = pipeline.predict(texts)
+         correct = sum(p == l for p, l in zip(preds, labels))
+         self.stdout.write(f'Training accuracy: {correct}/{len(labels)} ({correct/len(labels)*100:.0f}%)')
++
++        # SECURITY: service.py refuses to unpickle this file unless its hash
++        # matches EXPECTED_SHA256. That's a deliberate step, not an oversight
++        # — update the constant by hand after reviewing that this retrain is
++        # actually trusted.
++        self.stdout.write(self.style.WARNING(
++            f'\nModel file SHA256: {digest.hexdigest()}\n'
++            'Update EXPECTED_SHA256 in classifier/service.py to this value, '
++            'or the new model will be ignored (heuristics will be used instead).'
++        ))
+diff --git a/asc_doctrack/classifier/service.py b/asc_doctrack/classifier/service.py
+index 7ce8fc8..bb18bfd 100644
+--- a/asc_doctrack/classifier/service.py
++++ b/asc_doctrack/classifier/service.py
+@@ -9,9 +9,23 @@ Training data: stored in classifier/training_data.py
+ Model file:    classifier/models/doc_classifier.pkl
+ 
+ To retrain: python manage.py train_classifier
++
++SECURITY: MODEL_PATH must always be a fixed, developer-controlled path —
++never derive it from request data, a database value, or any other
++user-influenced input. pickle.load() executes arbitrary code for whatever
++bytes it's given, so this loader only trusts a file matching EXPECTED_SHA256
++below. A mismatch (tampering, a swapped-in file, or a future "upload your
++own model" feature that reuses this loader without updating the pin) is
++treated as "no model available" — it logs an error and falls back to the
++rule-based heuristics below rather than deserializing untrusted bytes.
++
++`python manage.py train_classifier` prints the new file's SHA256 after
++writing it; update EXPECTED_SHA256 to that value as a deliberate,
++reviewed step whenever the model is intentionally retrained.
+ """
+ import os
+ import pickle
++import hashlib
+ import logging
+ from pathlib import Path
+ 
+@@ -19,10 +33,33 @@ logger   = logging.getLogger(__name__)
+ MODEL_PATH = Path(__file__).parent / 'models' / 'doc_classifier.pkl'
+ _pipeline  = None   # module-level cache
+ 
++# SHA256 of the currently-trusted classifier/models/doc_classifier.pkl.
++# Update this constant (and only this constant) after a deliberate retrain.
++EXPECTED_SHA256 = 'ed3278ee186aee2ade9be6584cf9cd735f72eb79c3365f3a6566118cfc6bc67d'
++
++
++def _file_sha256(path: Path) -> str:
++    digest = hashlib.sha256()
++    with open(path, 'rb') as f:
++        for chunk in iter(lambda: f.read(1024 * 1024), b''):
++            digest.update(chunk)
++    return digest.hexdigest()
++
+ 
+ def _load_pipeline():
+     global _pipeline
+     if _pipeline is None and MODEL_PATH.exists():
++        actual_hash = _file_sha256(MODEL_PATH)
++        if actual_hash != EXPECTED_SHA256:
++            logger.error(
++                "Classifier model at %s failed its integrity check "
++                "(expected sha256=%s, got %s). Refusing to unpickle it; "
++                "falling back to heuristic classification. If this model "
++                "was retrained on purpose, update EXPECTED_SHA256 in "
++                "classifier/service.py.",
++                MODEL_PATH, EXPECTED_SHA256, actual_hash,
++            )
++            return None
+         with open(MODEL_PATH, 'rb') as f:
+             _pipeline = pickle.load(f)
+     return _pipeline
+diff --git a/asc_doctrack/classifier/tests.py b/asc_doctrack/classifier/tests.py
+index 7ce503c..f156905 100644
+--- a/asc_doctrack/classifier/tests.py
++++ b/asc_doctrack/classifier/tests.py
+@@ -1,3 +1,163 @@
++"""
++classifier/tests.py
++───────────────────
++Tests for Finding #5: pickle.load() without integrity verification.
++
++Before the fix, _load_pipeline() unconditionally called pickle.load() on
++whatever bytes were at MODEL_PATH. pickle.load() executes arbitrary code, so
++if that path were ever pointed at attacker-controlled bytes (e.g. via a
++future "upload a custom model" feature), it would be an RCE vector.
++
++After the fix, _load_pipeline():
++  1. Computes the SHA-256 of the file on disk.
++  2. Compares it against EXPECTED_SHA256 (a constant pinned to the current
++     trusted artifact).
++  3. Logs an error and returns None (falling back to heuristics) on mismatch
++     rather than deserializing untrusted bytes.
++
++These tests verify all three behaviours, plus that the pinned constant in
++service.py actually matches the file on disk (so a silently stale pin is
++caught in CI before it reaches production).
++"""
++import hashlib
++from pathlib import Path
++from unittest.mock import patch
++
+ from django.test import TestCase
+ 
+-# Create your tests here.
++from classifier.service import (
++    EXPECTED_SHA256,
++    MODEL_PATH,
++    _file_sha256,
++    _load_pipeline,
++)
++
++
++def _reset_pipeline_cache():
++    """Reset the module-level _pipeline cache between tests."""
++    import classifier.service as svc
++    svc._pipeline = None
++
++
++# ── _file_sha256 ──────────────────────────────────────────────────────────────
++
++class FileSHA256Tests(TestCase):
++    def test_hash_matches_direct_hashlib_computation(self):
++        """_file_sha256 must produce the same result as a direct hashlib.sha256 run."""
++        if not MODEL_PATH.exists():
++            self.skipTest("Model file not present in this environment.")
++        expected = hashlib.sha256(MODEL_PATH.read_bytes()).hexdigest()
++        self.assertEqual(_file_sha256(MODEL_PATH), expected)
++
++    def test_hash_is_64_hex_chars(self):
++        """SHA-256 digest must always be a 64-character lowercase hex string."""
++        if not MODEL_PATH.exists():
++            self.skipTest("Model file not present in this environment.")
++        digest = _file_sha256(MODEL_PATH)
++        self.assertEqual(len(digest), 64)
++        self.assertTrue(all(c in '0123456789abcdef' for c in digest))
++
++
++# ── EXPECTED_SHA256 pin ───────────────────────────────────────────────────────
++
++class ExpectedHashPinTests(TestCase):
++    """
++    The hardcoded EXPECTED_SHA256 constant must exactly match the file on disk.
++    A mismatch here means either:
++      (a) the model was retrained and the constant wasn't updated — the fix
++          is to run `python manage.py train_classifier` and follow its
++          instructions; or
++      (b) the file was tampered with since the last deliberate retrain.
++    Catching both in CI is the whole point of the pin.
++    """
++
++    def test_expected_sha256_matches_current_model_file(self):
++        if not MODEL_PATH.exists():
++            self.skipTest("Model file not present in this environment.")
++        actual = _file_sha256(MODEL_PATH)
++        self.assertEqual(
++            actual, EXPECTED_SHA256,
++            f"Model file hash mismatch.\n"
++            f"  EXPECTED_SHA256 in service.py : {EXPECTED_SHA256}\n"
++            f"  Actual hash of {MODEL_PATH.name}: {actual}\n"
++            "Either the model was retrained without updating the pin, or the "
++            "file was modified. Run `python manage.py train_classifier` and "
++            "update EXPECTED_SHA256 in classifier/service.py."
++        )
++
++
++# ── _load_pipeline integrity gate ─────────────────────────────────────────────
++
++class LoadPipelineIntegrityTests(TestCase):
++
++    def setUp(self):
++        _reset_pipeline_cache()
++
++    def tearDown(self):
++        _reset_pipeline_cache()
++
++    def test_load_pipeline_succeeds_with_correct_hash(self):
++        """_load_pipeline() returns a non-None pipeline when the hash matches."""
++        if not MODEL_PATH.exists():
++            self.skipTest("Model file not present in this environment.")
++        pipeline = _load_pipeline()
++        self.assertIsNotNone(pipeline,
++                             "_load_pipeline() must return the pipeline when the hash is correct")
++
++    def test_load_pipeline_returns_none_on_hash_mismatch(self):
++        """_load_pipeline() must refuse to unpickle a file whose hash doesn't match."""
++        if not MODEL_PATH.exists():
++            self.skipTest("Model file not present in this environment.")
++        with patch('classifier.service.EXPECTED_SHA256', 'deadbeef' * 8):
++            result = _load_pipeline()
++        self.assertIsNone(result,
++                          "_load_pipeline() must return None (not unpickle) when the hash mismatches")
++
++    def test_load_pipeline_logs_error_on_hash_mismatch(self):
++        """A hash mismatch must produce an ERROR-level log so it's visible in monitoring."""
++        if not MODEL_PATH.exists():
++            self.skipTest("Model file not present in this environment.")
++        with patch('classifier.service.EXPECTED_SHA256', 'deadbeef' * 8):
++            with self.assertLogs('classifier.service', level='ERROR') as cm:
++                _load_pipeline()
++        error_messages = '\n'.join(cm.output)
++        self.assertIn('integrity check', error_messages,
++                      "Error log must mention 'integrity check'")
++        self.assertIn('EXPECTED_SHA256', error_messages,
++                      "Error log must tell the operator what constant to update")
++
++    def test_load_pipeline_returns_none_when_file_is_missing(self):
++        """If the model file doesn't exist, _load_pipeline() must return None cleanly."""
++        with patch('classifier.service.MODEL_PATH', Path('/nonexistent/model.pkl')):
++            result = _load_pipeline()
++        self.assertIsNone(result)
++
++    def test_load_pipeline_is_idempotent_with_correct_hash(self):
++        """Calling _load_pipeline() twice returns the same cached object."""
++        if not MODEL_PATH.exists():
++            self.skipTest("Model file not present in this environment.")
++        first  = _load_pipeline()
++        second = _load_pipeline()
++        self.assertIs(first, second,
++                      "_load_pipeline() must cache the result and not re-read the file")
++
++    def test_tampered_file_is_rejected(self):
++        """
++        A file with the correct name but wrong bytes (simulating tampering)
++        must be rejected. We simulate this by pointing MODEL_PATH at a
++        temporary file with different content.
++        """
++        import tempfile, os
++        with tempfile.NamedTemporaryFile(delete=False, suffix='.pkl') as f:
++            f.write(b'malicious payload')
++            tmp_path = Path(f.name)
++        try:
++            # Pin the EXPECTED_SHA256 to the real model's hash (not the temp file's)
++            real_hash = _file_sha256(MODEL_PATH) if MODEL_PATH.exists() else 'a' * 64
++            with patch('classifier.service.MODEL_PATH',     tmp_path), \
++                 patch('classifier.service.EXPECTED_SHA256', real_hash):
++                result = _load_pipeline()
++            self.assertIsNone(result,
++                              "A file with wrong bytes must be rejected even if the name is correct")
++        finally:
++            os.unlink(tmp_path)
+diff --git a/asc_doctrack/config/settings.py b/asc_doctrack/config/settings.py
+index ecef048..b6e9584 100644
+--- a/asc_doctrack/config/settings.py
++++ b/asc_doctrack/config/settings.py
+@@ -2,13 +2,69 @@ from pathlib import Path
+ from datetime import timedelta
+ import os
+ from dotenv import load_dotenv
++from django.core.exceptions import ImproperlyConfigured
+ 
+ load_dotenv()
+ 
+ BASE_DIR = Path(__file__).resolve().parent.parent
+ 
+-SECRET_KEY = os.getenv('SECRET_KEY', 'change-me-in-production')
+-DEBUG = os.getenv('DEBUG', 'True') == 'True'
++
++def _resolve_security_settings(django_env, raw_secret_key, raw_debug_env):
++    """
++    Pure function — validates the environment-supplied security settings and
++    returns ``(secret_key: str, debug: bool)``, or raises
++    ``ImproperlyConfigured`` if an unsafe combination is detected.
++
++    Extracted from module-level code so the validation logic can be unit-
++    tested without reloading the entire settings module (see config/tests.py).
++    Called exactly once at module load time; do not call it anywhere else.
++
++    Args:
++        django_env:     Value of the DJANGO_ENV env var (default 'development').
++        raw_secret_key: Value of the SECRET_KEY env var, or None / '' if unset.
++        raw_debug_env:  Value of the DEBUG env var ('True'/'False'), or None.
++    """
++    is_production = django_env != 'development'
++
++    if not raw_secret_key:
++        if is_production:
++            raise ImproperlyConfigured(
++                "SECRET_KEY is not set. Refusing to start with an insecure "
++                "default outside development. Generate one with "
++                '`python -c "import secrets; print(secrets.token_hex(50))"` '
++                "and set it in the environment (see .env.example)."
++            )
++        # Dev-only fallback — never reached when DJANGO_ENV != 'development'.
++        secret_key = 'django-insecure-local-dev-only-do-not-use-in-production'
++    else:
++        secret_key = raw_secret_key
++
++    if raw_debug_env is None:
++        # Unset: default to the safe value for the environment.
++        debug = not is_production
++    else:
++        debug = raw_debug_env == 'True'
++        if is_production and debug:
++            raise ImproperlyConfigured(
++                "DEBUG=True is set but DJANGO_ENV is not 'development'. "
++                "Running with DEBUG enabled outside development is not "
++                "allowed — it exposes stack traces, settings, and SQL to "
++                "visitors."
++            )
++
++    return secret_key, debug
++
++
++# SECURITY: only 'development' falls back to convenience defaults; everything
++# else must be fully configured or the server refuses to start. See the
++# docstring of _resolve_security_settings() above.
++DJANGO_ENV    = os.getenv('DJANGO_ENV', 'development')
++IS_PRODUCTION = DJANGO_ENV != 'development'
++SECRET_KEY, DEBUG = _resolve_security_settings(
++    DJANGO_ENV,
++    os.getenv('SECRET_KEY'),
++    os.getenv('DEBUG'),
++)
+ ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost').split(',')
+ 
+ INSTALLED_APPS = [
+@@ -135,7 +191,7 @@ _cors_explicit = os.getenv('CORS_ALLOWED_ORIGINS', '')
+ if _cors_explicit:
+     CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_explicit.split(',') if o.strip()]
+     CORS_ALLOW_ALL_ORIGINS = False
+-elif DEBUG and os.getenv('DJANGO_ENV', 'development') == 'development':
++elif DEBUG and not IS_PRODUCTION:
+     CORS_ALLOW_ALL_ORIGINS = True
+ else:
+     CORS_ALLOW_ALL_ORIGINS = False
+diff --git a/asc_doctrack/config/tests.py b/asc_doctrack/config/tests.py
+new file mode 100644
+index 0000000..a128e46
+--- /dev/null
++++ b/asc_doctrack/config/tests.py
+@@ -0,0 +1,141 @@
++"""
++config/tests.py
++───────────────
++Tests for Finding #4: insecure settings defaults.
++
++Before the fix, settings.py silently fell back to 'change-me-in-production'
++for SECRET_KEY and True for DEBUG when those env vars weren't set — the
++server started in an insecure state without any indication of the problem.
++
++After the fix, _resolve_security_settings() raises ImproperlyConfigured on
++unsafe combinations in non-development environments, and returns safe defaults
++in development so existing local workflows are unaffected.
++
++The validation logic lives in _resolve_security_settings() (a pure function)
++so it can be tested directly without reloading the entire settings module.
++"""
++from django.core.exceptions import ImproperlyConfigured
++from django.test import SimpleTestCase
++
++from config.settings import _resolve_security_settings
++
++
++class SettingsValidationProductionTests(SimpleTestCase):
++    """
++    In any DJANGO_ENV other than 'development', insecure combinations must
++    raise ImproperlyConfigured and prevent the server from starting.
++    """
++
++    # ── SECRET_KEY ────────────────────────────────────────────────────────────
++
++    def test_raises_when_secret_key_is_unset_in_production(self):
++        with self.assertRaises(ImproperlyConfigured) as cm:
++            _resolve_security_settings('production', None, 'False')
++        self.assertIn('SECRET_KEY', str(cm.exception))
++
++    def test_raises_when_secret_key_is_empty_string_in_production(self):
++        with self.assertRaises(ImproperlyConfigured):
++            _resolve_security_settings('production', '', 'False')
++
++    def test_raises_when_secret_key_is_unset_in_staging(self):
++        """Any DJANGO_ENV value that isn't 'development' is treated as production."""
++        with self.assertRaises(ImproperlyConfigured):
++            _resolve_security_settings('staging', None, 'False')
++
++    def test_raises_when_secret_key_is_unset_in_unknown_env(self):
++        with self.assertRaises(ImproperlyConfigured):
++            _resolve_security_settings('unknown', None, 'False')
++
++    # ── DEBUG ────────────────────────────────────────────────────────────────
++
++    def test_raises_when_debug_is_true_in_production(self):
++        with self.assertRaises(ImproperlyConfigured) as cm:
++            _resolve_security_settings('production', 'real-secret-key-here', 'True')
++        self.assertIn('DEBUG', str(cm.exception))
++
++    def test_raises_when_debug_is_true_in_staging(self):
++        with self.assertRaises(ImproperlyConfigured):
++            _resolve_security_settings('staging', 'real-secret-key-here', 'True')
++
++    # ── valid production configuration ────────────────────────────────────────
++
++    def test_valid_production_config_returns_correctly(self):
++        key, debug = _resolve_security_settings('production', 'a-real-secret', 'False')
++        self.assertEqual(key, 'a-real-secret')
++        self.assertFalse(debug)
++
++    def test_valid_staging_config_returns_correctly(self):
++        key, debug = _resolve_security_settings('staging', 'a-real-secret', 'False')
++        self.assertEqual(key, 'a-real-secret')
++        self.assertFalse(debug)
++
++    def test_debug_unset_in_production_defaults_to_false(self):
++        """When DEBUG env var is not set at all, it must default to False in production."""
++        key, debug = _resolve_security_settings('production', 'a-real-secret', None)
++        self.assertFalse(debug,
++                         "Unset DEBUG must default to False outside development, not True")
++
++    def test_debug_false_explicit_in_production_is_accepted(self):
++        key, debug = _resolve_security_settings('production', 'a-real-secret', 'False')
++        self.assertFalse(debug)
++
++
++class SettingsValidationDevelopmentTests(SimpleTestCase):
++    """
++    In 'development', the insecure-default fallbacks must still work so that
++    local `cp .env.example .env; python manage.py runserver` keeps working.
++    """
++
++    def test_missing_secret_key_in_development_uses_insecure_fallback(self):
++        """Missing SECRET_KEY in dev must not raise — it returns the insecure dev fallback."""
++        key, debug = _resolve_security_settings('development', None, None)
++        self.assertIn('insecure', key,
++                      "Dev fallback SECRET_KEY must contain 'insecure' so it's obviously wrong in logs")
++
++    def test_empty_secret_key_in_development_uses_insecure_fallback(self):
++        key, _ = _resolve_security_settings('development', '', None)
++        self.assertIn('insecure', key)
++
++    def test_debug_unset_in_development_defaults_to_true(self):
++        """When DEBUG env var is not set, it should default to True in development."""
++        _, debug = _resolve_security_settings('development', 'any-key', None)
++        self.assertTrue(debug,
++                        "Unset DEBUG must default to True in development for DX convenience")
++
++    def test_debug_false_explicit_in_development_is_respected(self):
++        """Developers can opt into DEBUG=False locally (e.g. to test production behaviour)."""
++        _, debug = _resolve_security_settings('development', 'any-key', 'False')
++        self.assertFalse(debug)
++
++    def test_debug_true_explicit_in_development_is_accepted(self):
++        _, debug = _resolve_security_settings('development', 'any-key', 'True')
++        self.assertTrue(debug)
++
++    def test_real_secret_key_in_development_is_used_as_is(self):
++        """If a developer has set a real SECRET_KEY locally, it must be used unchanged."""
++        key, _ = _resolve_security_settings('development', 'a-real-secret', None)
++        self.assertEqual(key, 'a-real-secret')
++
++
++class SettingsValidationReturnTypeTests(SimpleTestCase):
++    """Verify the return type contract: always (str, bool)."""
++
++    def test_returns_str_and_bool_in_development(self):
++        key, debug = _resolve_security_settings('development', None, None)
++        self.assertIsInstance(key,   str)
++        self.assertIsInstance(debug, bool)
++
++    def test_returns_str_and_bool_in_production(self):
++        key, debug = _resolve_security_settings('production', 'secret', 'False')
++        self.assertIsInstance(key,   str)
++        self.assertIsInstance(debug, bool)
++
++    def test_debug_string_false_produces_bool_false(self):
++        _, debug = _resolve_security_settings('development', 'k', 'False')
++        self.assertIs(debug, False)
++        self.assertIsInstance(debug, bool)
++
++    def test_debug_string_true_produces_bool_true(self):
++        _, debug = _resolve_security_settings('development', 'k', 'True')
++        self.assertIs(debug, True)
++        self.assertIsInstance(debug, bool)
+diff --git a/asc_doctrack/documents/models.py b/asc_doctrack/documents/models.py
+index ca1dd9c..8ac6945 100644
+--- a/asc_doctrack/documents/models.py
++++ b/asc_doctrack/documents/models.py
+@@ -1,7 +1,36 @@
+ from django.db import models
++from django.db.models import Q
+ from accounts.models import User, Office
+ 
+ 
++class DocumentQuerySet(models.QuerySet):
++    def visible_to(self, user):
++        """
++        SECURITY: single source of truth for "can this user see this document
++        at all" — used by DocumentViewSet (list/retrieve and every @action
++        that calls get_object), DocumentQRView, and the tracking WebSocket
++        consumer. Do not reimplement this check elsewhere; route new access
++        points through here instead so the policy can't drift out of sync
++        again (which is how the original bug happened).
++
++        Mirrors the policy documented in documents/permissions.py:
++          superadmin / records_officer → everything, including RESTRICTED
++          program_chair                → their own submissions, plus
++                                          anything currently in their office
++          faculty (and everyone else)  → their own submissions only
++        """
++        if user.is_records_admin:
++            return self.all()
++
++        qs = self.exclude(confidentiality=self.model.Confidentiality.RESTRICTED)
++
++        visible = Q(submitted_by=user)
++        if user.is_program_chair and user.office_id:
++            visible |= Q(current_office_id=user.office_id)
++
++        return qs.filter(visible)
++
++
+ class DocumentType(models.Model):
+     name      = models.CharField(max_length=100, unique=True)
+     code      = models.CharField(max_length=20,  unique=True)
+@@ -98,6 +127,8 @@ class Document(models.Model):
+     due_date     = models.DateField(null=True, blank=True)
+     completed_at = models.DateTimeField(null=True, blank=True)
+ 
++    objects = DocumentQuerySet.as_manager()
++
+     class Meta:
+         ordering = ['-created_at']
+ 
+@@ -130,7 +161,7 @@ class Document(models.Model):
+         def check(user):
+             if user.is_records_admin:
+                 return True
+-            return self.confidentiality != self.Confidentiality.RESTRICTED
++            return Document.objects.visible_to(user).filter(pk=self.pk).exists()
+         return check
+ 
+     def __str__(self):
+diff --git a/asc_doctrack/documents/permissions.py b/asc_doctrack/documents/permissions.py
+index 80cb907..abf85c1 100644
+--- a/asc_doctrack/documents/permissions.py
++++ b/asc_doctrack/documents/permissions.py
+@@ -40,16 +40,18 @@ class CanForwardDocument(BasePermission):
+ 
+ 
+ class CanViewDocument(BasePermission):
++    """
++    Not currently wired into any view (DocumentViewSet enforces visibility
++    via get_queryset() → Document.objects.visible_to() instead) — kept for
++    any future view that wants an object-level check. Delegates to
++    Document.is_visible_to so there's exactly one definition of "can this
++    user see this document", not a second copy that can drift out of sync.
++    """
+     def has_object_permission(self, request, view, obj):
+-        if request.user.is_records_admin or request.user.is_superadmin:
+-            return True
+-        from documents.models import Document
+-        return obj.confidentiality != Document.Confidentiality.RESTRICTED
++        return obj.is_visible_to(request.user)
+ 
+ 
+ class CanDownloadDocument(BasePermission):
++    """Not currently wired into any view — see CanViewDocument above."""
+     def has_object_permission(self, request, view, obj):
+-        if request.user.is_records_admin or request.user.is_superadmin:
+-            return True
+-        from documents.models import Document
+-        return obj.confidentiality == Document.Confidentiality.PUBLIC
++        return obj.is_downloadable_by(request.user)
+diff --git a/asc_doctrack/documents/qr_views.py b/asc_doctrack/documents/qr_views.py
+index 282d139..60e0204 100644
+--- a/asc_doctrack/documents/qr_views.py
++++ b/asc_doctrack/documents/qr_views.py
+@@ -26,10 +26,12 @@ class DocumentQRView(APIView):
+         except Document.DoesNotExist:
+             raise Http404
+ 
+-        # Confidentiality guard — restricted docs shouldn't be scannable by everyone
+-        if not request.user.is_records_admin:
+-            if doc.confidentiality == Document.Confidentiality.RESTRICTED:
+-                return HttpResponse(status=403)
++        # SECURITY: same ownership/office-aware check used by DocumentViewSet
++        # and the tracking WebSocket — see Document.objects.visible_to().
++        # 404 (not 403) so scanning an out-of-scope QR code doesn't even
++        # confirm the document exists.
++        if not Document.objects.visible_to(request.user).filter(pk=doc.pk).exists():
++            raise Http404
+ 
+         # Encode tracking number + deep-link hint so the app can route correctly
+         qr_data = f"asc-doctrack://documents/{doc.tracking_number}"
+diff --git a/asc_doctrack/documents/tests.py b/asc_doctrack/documents/tests.py
+index 7ce503c..ff50915 100644
+--- a/asc_doctrack/documents/tests.py
++++ b/asc_doctrack/documents/tests.py
+@@ -1,3 +1,318 @@
++"""
++documents/tests.py
++──────────────────
++Tests for Finding #2: Broken access control — non-admins can view all docs.
++
++Before the fix, `get_queryset`, `get_object`, `DocumentQRView`, and
++`consumers.check_access` all only excluded RESTRICTED documents for
++non-admins, but never filtered by ownership or office.  Any faculty
++user could list, retrieve, and watch every PUBLIC/INTERNAL/CONFIDENTIAL
++document in the system.
++
++After the fix, Document.objects.visible_to() enforces:
++  - records_admin    → all documents, including RESTRICTED
++  - program_chair    → own submissions + docs currently in their office (except RESTRICTED)
++  - faculty          → own submissions only (except RESTRICTED)
++
++All three call sites now delegate exclusively to visible_to(), so these
++tests cover the queryset method in depth and smoke-test each call site.
++"""
+ from django.test import TestCase
++from rest_framework import status
++from rest_framework.test import APITestCase
++
++from accounts.models import User, Office
++from documents.models import Document, DocumentType
++
++
++# ── Shared fixtures ───────────────────────────────────────────────────────────
++
++def make_office(name, code):
++    return Office.objects.create(name=name, code=code)
++
++def make_user(username, role=User.Role.FACULTY, office=None, pw='securepass123!'):
++    u = User.objects.create_user(username=username, password=pw, role=role)
++    if office:
++        u.office = office
++        u.save()
++    return u
++
++def make_doc_type():
++    dt, _ = DocumentType.objects.get_or_create(
++        name='Test Type', defaults={'code': 'TST'}
++    )
++    return dt
++
++def make_doc(submitted_by, current_office=None,
++             confidentiality=Document.Confidentiality.INTERNAL,
++             title='Test Doc'):
++    """
++    Creates a Document, bypassing file-upload validation (the FileField
++    stores a path string; for queryset/access tests no actual file is needed).
++    """
++    return Document.objects.create(
++        title=title,
++        doc_type=make_doc_type(),
++        submitted_by=submitted_by,
++        current_office=current_office,
++        confidentiality=confidentiality,
++        file='test/placeholder.pdf',
++    )
++
++
++# ── DocumentQuerySet.visible_to() unit tests ──────────────────────────────────
++
++class DocumentQuerySetVisibleToTests(TestCase):
++    """
++    Direct unit tests on DocumentQuerySet.visible_to().
++    These are the ground-truth correctness tests; if these pass the view and
++    consumer tests below are testing integration plumbing only.
++    """
++
++    def setUp(self):
++        self.records_office = make_office('Records Office', 'REC')
++        self.dept_a         = make_office('Department A',   'DPTA')
++        self.dept_b         = make_office('Department B',   'DPTB')
++
++        self.admin   = make_user('admin',   role=User.Role.RECORDS_OFFICER, office=self.records_office)
++        self.chair_a = make_user('chair_a', role=User.Role.PROGRAM_CHAIR,   office=self.dept_a)
++        self.chair_b = make_user('chair_b', role=User.Role.PROGRAM_CHAIR,   office=self.dept_b)
++        self.fac_a   = make_user('fac_a',   role=User.Role.FACULTY,         office=self.dept_a)
++        self.fac_b   = make_user('fac_b',   role=User.Role.FACULTY,         office=self.dept_b)
++
++        # Docs by fac_a, currently sitting in dept_a or dept_b
++        self.doc_pub_fac_a_dept_a  = make_doc(self.fac_a, self.dept_a, Document.Confidentiality.PUBLIC,    'Public fac_a dept_a')
++        self.doc_int_fac_a_dept_b  = make_doc(self.fac_a, self.dept_b, Document.Confidentiality.INTERNAL,  'Internal fac_a dept_b')
++        # Doc by fac_b, in dept_b
++        self.doc_pub_fac_b_dept_b  = make_doc(self.fac_b, self.dept_b, Document.Confidentiality.PUBLIC,    'Public fac_b dept_b')
++        # Restricted doc by admin
++        self.doc_restricted        = make_doc(self.admin, self.dept_a, Document.Confidentiality.RESTRICTED, 'Restricted admin')
++
++    # ── records_admin ─────────────────────────────────────────────────────────
++
++    def test_records_admin_sees_all_docs_including_restricted(self):
++        qs = Document.objects.visible_to(self.admin)
++        self.assertIn(self.doc_pub_fac_a_dept_a, qs)
++        self.assertIn(self.doc_int_fac_a_dept_b, qs)
++        self.assertIn(self.doc_pub_fac_b_dept_b, qs)
++        self.assertIn(self.doc_restricted,        qs)
++        self.assertEqual(qs.count(), 4)
++
++    # ── faculty ───────────────────────────────────────────────────────────────
++
++    def test_faculty_sees_only_own_submissions(self):
++        qs = Document.objects.visible_to(self.fac_a)
++        # fac_a submitted two docs
++        self.assertIn(self.doc_pub_fac_a_dept_a, qs)
++        self.assertIn(self.doc_int_fac_a_dept_b, qs)
++        # fac_a did NOT submit these
++        self.assertNotIn(self.doc_pub_fac_b_dept_b, qs,
++                         "faculty must not see docs they did not submit")
++        self.assertNotIn(self.doc_restricted, qs)
++
++    def test_faculty_cannot_see_restricted_even_if_currently_in_their_office(self):
++        """RESTRICTED is admin-only regardless of where the doc currently sits."""
++        # doc_restricted.current_office = dept_a, same as fac_a — still invisible
++        qs = Document.objects.visible_to(self.fac_a)
++        self.assertNotIn(self.doc_restricted, qs)
++
++    def test_faculty_cannot_see_other_faculty_docs_by_office_proximity(self):
++        """Being in the same department office must not grant visibility of others' docs."""
++        # fac_a and chair_a are both in dept_a; doc_pub_fac_b_dept_b is in dept_b.
++        # fac_b submitted doc_pub_fac_b_dept_b — fac_a must not see it.
++        qs = Document.objects.visible_to(self.fac_a)
++        self.assertNotIn(self.doc_pub_fac_b_dept_b, qs)
++
++    def test_faculty_without_own_docs_sees_empty_queryset(self):
++        newcomer = make_user('newcomer', role=User.Role.FACULTY, office=self.dept_a)
++        qs = Document.objects.visible_to(newcomer)
++        self.assertEqual(qs.count(), 0)
++
++    # ── program_chair ─────────────────────────────────────────────────────────
++
++    def test_program_chair_sees_own_submissions(self):
++        chair_doc = make_doc(self.chair_a, self.dept_b, Document.Confidentiality.PUBLIC,
++                             'Chair A own doc')
++        qs = Document.objects.visible_to(self.chair_a)
++        self.assertIn(chair_doc, qs,
++                      "program_chair must see their own submissions")
++
++    def test_program_chair_sees_docs_currently_in_their_office(self):
++        qs = Document.objects.visible_to(self.chair_a)
++        # doc_pub_fac_a_dept_a is in dept_a — chair_a's office
++        self.assertIn(self.doc_pub_fac_a_dept_a, qs,
++                      "program_chair must see docs currently in their office")
++
++    def test_program_chair_cannot_see_docs_in_other_office(self):
++        qs = Document.objects.visible_to(self.chair_a)
++        # doc_pub_fac_b_dept_b is in dept_b — chair_a's is dept_a
++        self.assertNotIn(self.doc_pub_fac_b_dept_b, qs,
++                         "program_chair must not see docs in a different office")
++
++    def test_program_chair_cannot_see_restricted_even_in_their_office(self):
++        # doc_restricted.current_office = dept_a — same as chair_a, still invisible
++        qs = Document.objects.visible_to(self.chair_a)
++        self.assertNotIn(self.doc_restricted, qs)
++
++    def test_program_chair_without_office_sees_only_own_submissions(self):
++        """A program_chair with no office assigned falls back to own-submissions only."""
++        chair_no_office = make_user('chair_no_office', role=User.Role.PROGRAM_CHAIR)
++        own_doc = make_doc(chair_no_office, self.dept_a)
++        qs = Document.objects.visible_to(chair_no_office)
++        self.assertIn(own_doc, qs)
++        self.assertNotIn(self.doc_pub_fac_a_dept_a, qs,
++                         "program_chair with no office must not see dept docs")
++
++    # ── cross-cutting: RESTRICTED always excluded for non-admins ──────────────
++
++    def test_restricted_always_excluded_for_non_admins(self):
++        for user in (self.chair_a, self.chair_b, self.fac_a, self.fac_b):
++            with self.subTest(user=user.username):
++                qs = Document.objects.visible_to(user)
++                self.assertNotIn(self.doc_restricted, qs)
++
++
++# ── Document.is_visible_to property tests ────────────────────────────────────
++
++class DocumentIsVisibleToPropertyTests(TestCase):
++    """
++    is_visible_to is a property returning a callable — it now delegates to
++    Document.objects.visible_to() rather than re-implementing the check.
++    """
++
++    def setUp(self):
++        self.records_office = make_office('Records', 'REC')
++        self.dept           = make_office('Dept',    'DPT')
++        self.admin   = make_user('admin2',   role=User.Role.RECORDS_OFFICER)
++        self.faculty = make_user('faculty2', role=User.Role.FACULTY)
++        self.other   = make_user('other2',   role=User.Role.FACULTY)
++
++    def test_admin_can_see_restricted_doc(self):
++        doc = make_doc(self.admin, confidentiality=Document.Confidentiality.RESTRICTED)
++        self.assertTrue(doc.is_visible_to(self.admin))
++
++    def test_faculty_can_see_own_non_restricted_doc(self):
++        doc = make_doc(self.faculty, confidentiality=Document.Confidentiality.INTERNAL)
++        self.assertTrue(doc.is_visible_to(self.faculty))
++
++    def test_faculty_cannot_see_someone_elses_doc(self):
++        doc = make_doc(self.admin, confidentiality=Document.Confidentiality.PUBLIC)
++        self.assertFalse(doc.is_visible_to(self.faculty))
++
++
++# ── DocumentViewSet HTTP-level access tests ───────────────────────────────────
++
++class DocumentViewSetAccessTests(APITestCase):
++    """
++    Smoke-tests that the HTTP layer (list, retrieve) enforces visible_to().
++    Detailed policy coverage is in DocumentQuerySetVisibleToTests.
++    """
++
++    def setUp(self):
++        self.dept_a = make_office('Dept A', 'A')
++        self.dept_b = make_office('Dept B', 'B')
++        self.admin   = make_user('vset_admin',   role=User.Role.RECORDS_OFFICER)
++        self.fac_a   = make_user('vset_fac_a',   role=User.Role.FACULTY, office=self.dept_a)
++        self.fac_b   = make_user('vset_fac_b',   role=User.Role.FACULTY, office=self.dept_b)
++
++        self.own_doc       = make_doc(self.fac_a, self.dept_a, Document.Confidentiality.PUBLIC,
++                                     'fac_a own')
++        self.others_doc    = make_doc(self.fac_b, self.dept_b, Document.Confidentiality.PUBLIC,
++                                     'fac_b own')
++        self.restricted_doc = make_doc(self.admin, self.dept_a, Document.Confidentiality.RESTRICTED,
++                                      'restricted')
++
++    # ── list ──────────────────────────────────────────────────────────────────
++
++    def test_faculty_list_contains_only_own_docs(self):
++        self.client.force_authenticate(user=self.fac_a)
++        resp = self.client.get('/api/docs/')
++        self.assertEqual(resp.status_code, status.HTTP_200_OK)
++        ids = [d['id'] for d in resp.data.get('results', resp.data)]
++        self.assertIn(self.own_doc.pk,       ids, "own doc must be in list")
++        self.assertNotIn(self.others_doc.pk, ids, "other faculty's doc must NOT be in list")
++        self.assertNotIn(self.restricted_doc.pk, ids, "RESTRICTED must NOT be in list")
++
++    def test_records_officer_list_contains_all_docs(self):
++        self.client.force_authenticate(user=self.admin)
++        resp = self.client.get('/api/docs/')
++        self.assertEqual(resp.status_code, status.HTTP_200_OK)
++        ids = [d['id'] for d in resp.data.get('results', resp.data)]
++        for doc in (self.own_doc, self.others_doc, self.restricted_doc):
++            self.assertIn(doc.pk, ids)
++
++    # ── retrieve ──────────────────────────────────────────────────────────────
++
++    def test_faculty_retrieve_own_doc_returns_200(self):
++        self.client.force_authenticate(user=self.fac_a)
++        resp = self.client.get(f'/api/docs/{self.own_doc.pk}/')
++        self.assertEqual(resp.status_code, status.HTTP_200_OK)
++
++    def test_faculty_retrieve_other_faculty_doc_returns_404(self):
++        self.client.force_authenticate(user=self.fac_a)
++        resp = self.client.get(f'/api/docs/{self.others_doc.pk}/')
++        # 404 (not 403) because get_queryset scopes the queryset — DRF raises
++        # Http404 via get_object_or_404 when the pk isn't in the queryset.
++        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND,
++                         "faculty must get 404 (not 403) for another user's document")
++
++    def test_faculty_retrieve_restricted_doc_returns_404(self):
++        self.client.force_authenticate(user=self.fac_a)
++        resp = self.client.get(f'/api/docs/{self.restricted_doc.pk}/')
++        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
++
++    def test_records_officer_retrieve_restricted_doc_returns_200(self):
++        self.client.force_authenticate(user=self.admin)
++        resp = self.client.get(f'/api/docs/{self.restricted_doc.pk}/')
++        self.assertEqual(resp.status_code, status.HTTP_200_OK)
++
++    def test_unauthenticated_retrieve_returns_401(self):
++        resp = self.client.get(f'/api/docs/{self.own_doc.pk}/')
++        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
++
++
++# ── DocumentQRView HTTP-level access tests ────────────────────────────────────
++
++class DocumentQRViewAccessTests(APITestCase):
++    """
++    The QR endpoint now returns 404 (not 403) for out-of-scope documents —
++    scanning an opaque QR code must not even confirm the document exists.
++    """
++
++    def setUp(self):
++        self.dept_a = make_office('QR Dept A', 'QRA')
++        self.dept_b = make_office('QR Dept B', 'QRB')
++        self.admin   = make_user('qr_admin',   role=User.Role.RECORDS_OFFICER)
++        self.fac_a   = make_user('qr_fac_a',   role=User.Role.FACULTY, office=self.dept_a)
++        self.fac_b   = make_user('qr_fac_b',   role=User.Role.FACULTY, office=self.dept_b)
++
++        self.own_doc        = make_doc(self.fac_a, self.dept_a, Document.Confidentiality.PUBLIC)
++        self.others_doc     = make_doc(self.fac_b, self.dept_b, Document.Confidentiality.PUBLIC)
++        self.restricted_doc = make_doc(self.admin, self.dept_a, Document.Confidentiality.RESTRICTED)
++
++    def test_faculty_qr_own_doc_succeeds(self):
++        self.client.force_authenticate(user=self.fac_a)
++        resp = self.client.get(f'/api/docs/{self.own_doc.pk}/qr/')
++        self.assertNotEqual(resp.status_code, status.HTTP_404_NOT_FOUND,
++                            "faculty must be able to QR-scan their own doc")
++
++    def test_faculty_qr_other_faculty_doc_returns_404(self):
++        self.client.force_authenticate(user=self.fac_a)
++        resp = self.client.get(f'/api/docs/{self.others_doc.pk}/qr/')
++        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND,
++                         "scanning another faculty's doc must return 404, not 403")
++
++    def test_faculty_qr_restricted_doc_returns_404(self):
++        self.client.force_authenticate(user=self.fac_a)
++        resp = self.client.get(f'/api/docs/{self.restricted_doc.pk}/qr/')
++        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND,
++                         "scanning a RESTRICTED doc must return 404, not 403")
++
++    def test_records_officer_qr_restricted_doc_succeeds(self):
++        self.client.force_authenticate(user=self.admin)
++        resp = self.client.get(f'/api/docs/{self.restricted_doc.pk}/qr/')
++        self.assertNotEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+ 
+-# Create your tests here.
++    def test_unauthenticated_qr_returns_401(self):
++        resp = self.client.get(f'/api/docs/{self.own_doc.pk}/qr/')
++        self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
+diff --git a/asc_doctrack/documents/views.py b/asc_doctrack/documents/views.py
+index 68e2b35..dc155bd 100644
+--- a/asc_doctrack/documents/views.py
++++ b/asc_doctrack/documents/views.py
+@@ -43,14 +43,17 @@ class DocumentViewSet(ModelViewSet):
+ 
+     def get_queryset(self):
+         user = self.request.user
+-        qs   = Document.objects.select_related(
++        # SECURITY: visible_to() applies ownership/office scoping for non-admins
++        # (see Document.objects.visible_to / documents/permissions.py docstring).
++        # This is the single enforcement point — get_object() (used by retrieve
++        # and every detail @action below) is keyed off this queryset, so fixing
++        # it here is sufficient; no separate object-level RESTRICTED check is
++        # needed any more.
++        qs = Document.objects.visible_to(user).select_related(
+             'doc_type', 'submitted_by', 'current_office',
+             'origin_office', 'destination_office', 'assigned_to'
+         ).prefetch_related('comments', 'logs')
+ 
+-        if not user.is_records_admin:
+-            qs = qs.exclude(confidentiality=Document.Confidentiality.RESTRICTED)
+-
+         for param, field in [
+             ('status',          'status'),
+             ('priority',        'priority'),
+@@ -85,14 +88,6 @@ class DocumentViewSet(ModelViewSet):
+             return [CanForwardDocument()]
+         return [permissions.IsAuthenticated()]
+ 
+-    def get_object(self):
+-        obj = super().get_object()
+-        if not self.request.user.is_records_admin:
+-            if obj.confidentiality == Document.Confidentiality.RESTRICTED:
+-                from rest_framework.exceptions import PermissionDenied
+-                raise PermissionDenied("This document is restricted.")
+-        return obj
+-
+     def perform_create(self, serializer):
+         user = self.request.user
+         doc  = serializer.save(
+diff --git a/asc_doctrack/tracking/consumers.py b/asc_doctrack/tracking/consumers.py
+index 13fddb2..76e0a35 100644
+--- a/asc_doctrack/tracking/consumers.py
++++ b/asc_doctrack/tracking/consumers.py
+@@ -79,16 +79,12 @@ class DocumentTrackingConsumer(AsyncWebsocketConsumer):
+ 
+     @database_sync_to_async
+     def check_access(self, user, tracking_number):
++        # SECURITY: same ownership/office-aware check used by DocumentViewSet
++        # and DocumentQRView — see Document.objects.visible_to().
+         from documents.models import Document
+-        try:
+-            doc = Document.objects.get(tracking_number=tracking_number)
+-            if user.is_records_admin or user.is_superadmin:
+-                return True
+-            if doc.confidentiality == Document.Confidentiality.RESTRICTED:
+-                return False
+-            return True
+-        except Document.DoesNotExist:
+-            return False
++        return Document.objects.visible_to(user).filter(
++            tracking_number=tracking_number
++        ).exists()
+ 
+     @database_sync_to_async
+     def get_tracking_history(self, tracking_number):
+diff --git a/asc_doctrack/tracking/tests.py b/asc_doctrack/tracking/tests.py
+index 7ce503c..30545ea 100644
+--- a/asc_doctrack/tracking/tests.py
++++ b/asc_doctrack/tracking/tests.py
+@@ -1,3 +1,151 @@
++"""
++tracking/tests.py
++─────────────────
++Tests for Finding #2 (tracking consumer slice): consumers.check_access.
++
++Before the fix, check_access only excluded RESTRICTED documents for non-admins
++— it let any authenticated user subscribe to the WebSocket feed of any
++PUBLIC/INTERNAL/CONFIDENTIAL document regardless of ownership or office.
++
++After the fix, check_access is:
++
++    return Document.objects.visible_to(user).filter(
++        tracking_number=tracking_number
++    ).exists()
++
++Since check_access is a thin, transparent wrapper around DocumentQuerySet
++(which is fully tested in documents/tests.py), these tests focus on:
++
++  1. The integration wiring — that check_access correctly delegates to
++     visible_to() and not to a hand-rolled confidentiality check.
++  2. Key boundary cases specific to the tracking-number lookup path (e.g.
++     a tracking number that doesn't exist at all must return False).
++
++For async execution: check_access is decorated with @database_sync_to_async,
++so we call it through asgiref's async_to_sync() adapter.
++"""
+ from django.test import TestCase
++from asgiref.sync import async_to_sync
++
++from accounts.models import User, Office
++from documents.models import Document, DocumentType
++from tracking.consumers import DocumentTrackingConsumer
++
++
++# ── Helpers ───────────────────────────────────────────────────────────────────
++
++def make_office(name, code):
++    return Office.objects.create(name=name, code=code)
++
++def make_user(username, role=User.Role.FACULTY, office=None, pw='securepass123!'):
++    u = User.objects.create_user(username=username, password=pw, role=role)
++    if office:
++        u.office = office
++        u.save()
++    return u
++
++def make_doc_type():
++    dt, _ = DocumentType.objects.get_or_create(
++        name='Tracking Test Type', defaults={'code': 'TRK'}
++    )
++    return dt
++
++def make_doc(submitted_by, current_office=None,
++             confidentiality=Document.Confidentiality.INTERNAL):
++    return Document.objects.create(
++        title='Tracking Test Doc',
++        doc_type=make_doc_type(),
++        submitted_by=submitted_by,
++        current_office=current_office,
++        confidentiality=confidentiality,
++        file='test/tracking.pdf',
++    )
++
++def check_access(user, tracking_number):
++    """Synchronous wrapper around the async check_access consumer method."""
++    consumer = DocumentTrackingConsumer()
++    return async_to_sync(consumer.check_access)(user, tracking_number)
++
++
++# ── Tests ─────────────────────────────────────────────────────────────────────
++
++class ConsumerCheckAccessTests(TestCase):
++    """
++    consumers.check_access must enforce the same policy as visible_to().
++    """
++
++    def setUp(self):
++        self.dept_a = make_office('WS Dept A', 'WSA')
++        self.dept_b = make_office('WS Dept B', 'WSB')
++
++        self.admin   = make_user('ws_admin',   role=User.Role.RECORDS_OFFICER)
++        self.chair_a = make_user('ws_chair_a', role=User.Role.PROGRAM_CHAIR, office=self.dept_a)
++        self.fac_a   = make_user('ws_fac_a',   role=User.Role.FACULTY,       office=self.dept_a)
++        self.fac_b   = make_user('ws_fac_b',   role=User.Role.FACULTY,       office=self.dept_b)
++
++        self.own_doc        = make_doc(self.fac_a, self.dept_a, Document.Confidentiality.PUBLIC)
++        self.others_doc     = make_doc(self.fac_b, self.dept_b, Document.Confidentiality.PUBLIC)
++        self.restricted_doc = make_doc(self.admin, self.dept_a, Document.Confidentiality.RESTRICTED)
++
++    # ── faculty ───────────────────────────────────────────────────────────────
++
++    def test_faculty_can_access_own_doc_feed(self):
++        self.assertTrue(
++            check_access(self.fac_a, self.own_doc.tracking_number),
++            "faculty must be able to subscribe to their own document's WS feed"
++        )
++
++    def test_faculty_cannot_access_other_faculty_doc_feed(self):
++        self.assertFalse(
++            check_access(self.fac_a, self.others_doc.tracking_number),
++            "faculty must NOT be able to subscribe to another user's WS feed"
++        )
++
++    def test_faculty_cannot_access_restricted_doc_feed(self):
++        self.assertFalse(
++            check_access(self.fac_a, self.restricted_doc.tracking_number),
++            "faculty must NOT be able to subscribe to a RESTRICTED doc's WS feed"
++        )
++
++    # ── records_admin ─────────────────────────────────────────────────────────
++
++    def test_records_admin_can_access_restricted_doc_feed(self):
++        self.assertTrue(
++            check_access(self.admin, self.restricted_doc.tracking_number),
++            "records_admin must be able to subscribe to RESTRICTED docs"
++        )
++
++    def test_records_admin_can_access_any_doc_feed(self):
++        for doc in (self.own_doc, self.others_doc, self.restricted_doc):
++            with self.subTest(tracking_number=doc.tracking_number):
++                self.assertTrue(check_access(self.admin, doc.tracking_number))
++
++    # ── program_chair ─────────────────────────────────────────────────────────
++
++    def test_program_chair_can_access_doc_in_their_office(self):
++        # own_doc.current_office = dept_a = chair_a's office
++        self.assertTrue(
++            check_access(self.chair_a, self.own_doc.tracking_number),
++            "program_chair must be able to subscribe to docs in their office"
++        )
++
++    def test_program_chair_cannot_access_doc_in_other_office(self):
++        # others_doc.current_office = dept_b ≠ chair_a's office
++        self.assertFalse(
++            check_access(self.chair_a, self.others_doc.tracking_number),
++            "program_chair must NOT subscribe to docs outside their office"
++        )
++
++    # ── non-existent tracking number ──────────────────────────────────────────
++
++    def test_nonexistent_tracking_number_returns_false(self):
++        self.assertFalse(
++            check_access(self.fac_a, 'ASC-000000-ZZZZZZ'),
++            "a tracking number that doesn't exist must return False, not raise"
++        )
+ 
+-# Create your tests here.
++    def test_nonexistent_tracking_number_returns_false_for_admin(self):
++        self.assertFalse(
++            check_access(self.admin, 'ASC-000000-ZZZZZZ'),
++            "even admins must get False for a non-existent tracking number"
++        )
+diff --git a/asc_mobile/package.json b/asc_mobile/package.json
+index 07c6467..0336b6b 100644
+--- a/asc_mobile/package.json
++++ b/asc_mobile/package.json
+@@ -29,6 +29,7 @@
+     "expo-local-authentication": "~14.0.1",
+     "expo-barcode-scanner": "~13.0.1",
+     "expo-sharing": "~12.0.1",
++    "expo-secure-store": "~14.0.0",
+     "react-native-webview": "13.8.6",
+     "react-native-qrcode-svg": "6.3.13",
+     "@react-native-community/netinfo": "11.3.2"
+diff --git a/asc_mobile/src/context/AuthContext.js b/asc_mobile/src/context/AuthContext.js
+index 6354145..21ea4a6 100644
+--- a/asc_mobile/src/context/AuthContext.js
++++ b/asc_mobile/src/context/AuthContext.js
+@@ -1,5 +1,5 @@
+ import React, { createContext, useContext, useState, useEffect } from 'react';
+-import AsyncStorage from '@react-native-async-storage/async-storage';
++import * as secureStorage from '../utils/secureStorage';
+ import { authAPI } from '../api/services';
+ 
+ const AuthContext = createContext(null);
+@@ -12,13 +12,13 @@ export function AuthProvider({ children }) {
+   useEffect(() => {
+     (async () => {
+       try {
+-        const token = await AsyncStorage.getItem('access_token');
++        const token = await secureStorage.getItem('access_token');
+         if (token) {
+           const { data } = await authAPI.me();
+           setUser(data);
+         }
+       } catch {
+-        await AsyncStorage.multiRemove(['access_token', 'refresh_token']);
++        await secureStorage.multiRemove(['access_token', 'refresh_token']);
+       } finally {
+         setLoading(false);
+       }
+@@ -27,8 +27,8 @@ export function AuthProvider({ children }) {
+ 
+   const login = async (username, password) => {
+     const { data } = await authAPI.login(username, password);
+-    await AsyncStorage.setItem('access_token',  data.access);
+-    await AsyncStorage.setItem('refresh_token', data.refresh);
++    await secureStorage.setItem('access_token',  data.access);
++    await secureStorage.setItem('refresh_token', data.refresh);
+     const me = await authAPI.me();
+     setUser(me.data);
+     return me.data;
+@@ -36,10 +36,10 @@ export function AuthProvider({ children }) {
+ 
+   const logout = async () => {
+     try {
+-      const refresh = await AsyncStorage.getItem('refresh_token');
++      const refresh = await secureStorage.getItem('refresh_token');
+       if (refresh) await authAPI.logout(refresh);
+     } catch {}
+-    await AsyncStorage.multiRemove(['access_token', 'refresh_token']);
++    await secureStorage.multiRemove(['access_token', 'refresh_token']);
+     setUser(null);
+   };
+ 
+diff --git a/asc_mobile/src/hooks/useBiometric.js b/asc_mobile/src/hooks/useBiometric.js
+index 879b8ce..c16b2fb 100644
+--- a/asc_mobile/src/hooks/useBiometric.js
++++ b/asc_mobile/src/hooks/useBiometric.js
+@@ -1,11 +1,16 @@
+ /**
+  * useBiometric.js
+  * Face ID / fingerprint login for returning users.
+- * Stores credentials securely in AsyncStorage (encrypted by OS keychain in production).
++ *
++ * SECURITY: stores the raw username/password in expo-secure-store (iOS
++ * Keychain / Android Keystore-encrypted storage), not AsyncStorage. The
++ * previous version stored these in plain AsyncStorage, which is NOT
++ * encrypted on either platform — this held the user's actual login
++ * password in cleartext on disk.
+  */
+ import { useState, useEffect } from 'react';
+ import * as LocalAuthentication from 'expo-local-authentication';
+-import AsyncStorage from '@react-native-async-storage/async-storage';
++import * as secureStorage from '../utils/secureStorage';
+ 
+ const CREDS_KEY = 'doctrack_biometric_creds';
+ 
+@@ -18,7 +23,7 @@ export function useBiometric() {
+     (async () => {
+       const hasHardware = await LocalAuthentication.hasHardwareAsync();
+       const isEnrolled  = await LocalAuthentication.isEnrolledAsync();
+-      const savedCreds  = await AsyncStorage.getItem(CREDS_KEY);
++      const savedCreds  = await secureStorage.getItem(CREDS_KEY);
+       setSupported(hasHardware);
+       setEnrolled(isEnrolled);
+       setEnabled(hasHardware && isEnrolled && !!savedCreds);
+@@ -28,14 +33,14 @@ export function useBiometric() {
+   /** Save credentials after a successful password login */
+   const saveCreds = async (username, password) => {
+     try {
+-      await AsyncStorage.setItem(CREDS_KEY, JSON.stringify({ username, password }));
++      await secureStorage.setItem(CREDS_KEY, JSON.stringify({ username, password }));
+       setEnabled(true);
+     } catch {}
+   };
+ 
+   /** Clear saved credentials (on logout) */
+   const clearCreds = async () => {
+-    await AsyncStorage.removeItem(CREDS_KEY);
++    await secureStorage.removeItem(CREDS_KEY);
+     setEnabled(false);
+   };
+ 
+@@ -49,7 +54,7 @@ export function useBiometric() {
+     });
+     if (!result.success) return null;
+     try {
+-      const raw = await AsyncStorage.getItem(CREDS_KEY);
++      const raw = await secureStorage.getItem(CREDS_KEY);
+       return raw ? JSON.parse(raw) : null;
+     } catch { return null; }
+   };
+diff --git a/asc_mobile/src/screens/documents/DocumentDetailScreen.js b/asc_mobile/src/screens/documents/DocumentDetailScreen.js
+index a86a54b..4c14bde 100644
+--- a/asc_mobile/src/screens/documents/DocumentDetailScreen.js
++++ b/asc_mobile/src/screens/documents/DocumentDetailScreen.js
+@@ -15,7 +15,7 @@ import { StatusBadge, Button, LoadingOverlay } from '../../components';
+ import { useTheme, RADIUS, SHADOW, STATUS, PRIORITY_COLOR } from '../../utils/theme';
+ import { useAuth } from '../../context/AuthContext';
+ import { useDocumentTracking } from '../../utils/useDocumentTracking';
+-import AsyncStorage from '@react-native-async-storage/async-storage';
++import * as secureStorage from '../../utils/secureStorage';
+ import SignaturePad from '../../components/signature/SignaturePad';
+ 
+ const STATUSES = ['in_review','approved','rejected','returned','completed'];
+@@ -42,7 +42,7 @@ export default function DocumentDetailScreen({ route, navigation }) {
+ 
+   // WS real-time tracking
+   const [accessToken, setAccessToken] = useState('');
+-  useEffect(() => { AsyncStorage.getItem('access_token').then(t => setAccessToken(t||'')); }, []);
++  useEffect(() => { secureStorage.getItem('access_token').then(t => setAccessToken(t||'')); }, []);
+   const { logs: wsLogs, connected } = useDocumentTracking(doc?.tracking_number, accessToken);
+ 
+   const load = useCallback(async () => {
+diff --git a/asc_mobile/src/utils/secureStorage.js b/asc_mobile/src/utils/secureStorage.js
+new file mode 100644
+index 0000000..159ed69
+--- /dev/null
++++ b/asc_mobile/src/utils/secureStorage.js
+@@ -0,0 +1,41 @@
++/**
++ * secureStorage.js
++ * ─────────────────
++ * SECURITY: wrapper around expo-secure-store, used for anything sensitive
++ * (JWTs, saved login credentials). On iOS this is backed by the Keychain;
++ * on Android by Keystore-encrypted SharedPreferences — unlike AsyncStorage,
++ * which is plain unencrypted storage on both platforms.
++ *
++ * Do NOT use this for non-sensitive data (e.g. cached document lists) —
++ * SecureStore has tighter size limits than AsyncStorage and there's no
++ * benefit to encrypting data that isn't sensitive. Keep using AsyncStorage
++ * (see useOffline.js) for that.
++ *
++ * API mirrors the subset of AsyncStorage this app actually uses, so call
++ * sites don't need to learn a new shape.
++ */
++import * as SecureStore from 'expo-secure-store';
++
++export async function getItem(key) {
++  try {
++    return await SecureStore.getItemAsync(key);
++  } catch {
++    return null;
++  }
++}
++
++export async function setItem(key, value) {
++  await SecureStore.setItemAsync(key, value);
++}
++
++export async function removeItem(key) {
++  try {
++    await SecureStore.deleteItemAsync(key);
++  } catch {
++    // Nothing stored under this key — fine to ignore.
++  }
++}
++
++export async function multiRemove(keys) {
++  await Promise.all(keys.map(removeItem));
++}

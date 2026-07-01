@@ -15,7 +15,7 @@ import { StatusBadge, Button, LoadingOverlay } from '../../components';
 import { useTheme, RADIUS, SHADOW, STATUS, PRIORITY_COLOR } from '../../utils/theme';
 import { useAuth } from '../../context/AuthContext';
 import { useDocumentTracking } from '../../utils/useDocumentTracking';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as secureStorage from '../../utils/secureStorage';
 import SignaturePad from '../../components/signature/SignaturePad';
 
 const STATUSES = ['in_review','approved','rejected','returned','completed'];
@@ -42,7 +42,7 @@ export default function DocumentDetailScreen({ route, navigation }) {
 
   // WS real-time tracking
   const [accessToken, setAccessToken] = useState('');
-  useEffect(() => { AsyncStorage.getItem('access_token').then(t => setAccessToken(t||'')); }, []);
+  useEffect(() => { secureStorage.getItem('access_token').then(t => setAccessToken(t||'')); }, []);
   const { logs: wsLogs, connected } = useDocumentTracking(doc?.tracking_number, accessToken);
 
   const load = useCallback(async () => {

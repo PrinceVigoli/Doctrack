@@ -9,18 +9,22 @@ class OfficeSerializer(serializers.ModelSerializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
-    office   = OfficeSerializer(read_only=True)
-    office_id = serializers.PrimaryKeyRelatedField(
-        queryset=Office.objects.all(), source='office', write_only=True, required=False)
+    office    = OfficeSerializer(read_only=True)
     full_name = serializers.SerializerMethodField()
 
     class Meta:
         model  = User
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name',
-            'full_name', 'role', 'office', 'office_id', 'phone', 'avatar', 'is_active'
+            'full_name', 'role', 'office', 'phone', 'avatar', 'is_active'
         ]
-        read_only_fields = ['id']
+        # SECURITY: this serializer backs MeView, which any authenticated user
+        # can PATCH on themselves. role/is_active are privilege fields and
+        # office determines which documents a program_chair can see (see
+        # Document.objects.visible_to) — none of them may be self-editable.
+        # Office/role assignment happens only via RegisterSerializer, which is
+        # gated behind IsRecordsAdmin.
+        read_only_fields = ['id', 'role', 'is_active']
 
     def get_full_name(self, obj):
         return obj.get_full_name()

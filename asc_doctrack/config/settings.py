@@ -2,13 +2,69 @@ from pathlib import Path
 from datetime import timedelta
 import os
 from dotenv import load_dotenv
+from django.core.exceptions import ImproperlyConfigured
 
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.getenv('SECRET_KEY', 'change-me-in-production')
-DEBUG = os.getenv('DEBUG', 'True') == 'True'
+
+def _resolve_security_settings(django_env, raw_secret_key, raw_debug_env):
+    """
+    Pure function — validates the environment-supplied security settings and
+    returns ``(secret_key: str, debug: bool)``, or raises
+    ``ImproperlyConfigured`` if an unsafe combination is detected.
+
+    Extracted from module-level code so the validation logic can be unit-
+    tested without reloading the entire settings module (see config/tests.py).
+    Called exactly once at module load time; do not call it anywhere else.
+
+    Args:
+        django_env:     Value of the DJANGO_ENV env var (default 'development').
+        raw_secret_key: Value of the SECRET_KEY env var, or None / '' if unset.
+        raw_debug_env:  Value of the DEBUG env var ('True'/'False'), or None.
+    """
+    is_production = django_env != 'development'
+
+    if not raw_secret_key:
+        if is_production:
+            raise ImproperlyConfigured(
+                "SECRET_KEY is not set. Refusing to start with an insecure "
+                "default outside development. Generate one with "
+                '`python -c "import secrets; print(secrets.token_hex(50))"` '
+                "and set it in the environment (see .env.example)."
+            )
+        # Dev-only fallback — never reached when DJANGO_ENV != 'development'.
+        secret_key = 'django-insecure-local-dev-only-do-not-use-in-production'
+    else:
+        secret_key = raw_secret_key
+
+    if raw_debug_env is None:
+        # Unset: default to the safe value for the environment.
+        debug = not is_production
+    else:
+        debug = raw_debug_env == 'True'
+        if is_production and debug:
+            raise ImproperlyConfigured(
+                "DEBUG=True is set but DJANGO_ENV is not 'development'. "
+                "Running with DEBUG enabled outside development is not "
+                "allowed — it exposes stack traces, settings, and SQL to "
+                "visitors."
+            )
+
+    return secret_key, debug
+
+
+# SECURITY: only 'development' falls back to convenience defaults; everything
+# else must be fully configured or the server refuses to start. See the
+# docstring of _resolve_security_settings() above.
+DJANGO_ENV    = os.getenv('DJANGO_ENV', 'development')
+IS_PRODUCTION = DJANGO_ENV != 'development'
+SECRET_KEY, DEBUG = _resolve_security_settings(
+    DJANGO_ENV,
+    os.getenv('SECRET_KEY'),
+    os.getenv('DEBUG'),
+)
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost').split(',')
 
 INSTALLED_APPS = [
@@ -135,7 +191,7 @@ _cors_explicit = os.getenv('CORS_ALLOWED_ORIGINS', '')
 if _cors_explicit:
     CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_explicit.split(',') if o.strip()]
     CORS_ALLOW_ALL_ORIGINS = False
-elif DEBUG and os.getenv('DJANGO_ENV', 'development') == 'development':
+elif DEBUG and not IS_PRODUCTION:
     CORS_ALLOW_ALL_ORIGINS = True
 else:
     CORS_ALLOW_ALL_ORIGINS = False

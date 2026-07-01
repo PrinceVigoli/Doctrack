@@ -26,10 +26,12 @@ class DocumentQRView(APIView):
         except Document.DoesNotExist:
             raise Http404
 
-        # Confidentiality guard — restricted docs shouldn't be scannable by everyone
-        if not request.user.is_records_admin:
-            if doc.confidentiality == Document.Confidentiality.RESTRICTED:
-                return HttpResponse(status=403)
+        # SECURITY: same ownership/office-aware check used by DocumentViewSet
+        # and the tracking WebSocket — see Document.objects.visible_to().
+        # 404 (not 403) so scanning an out-of-scope QR code doesn't even
+        # confirm the document exists.
+        if not Document.objects.visible_to(request.user).filter(pk=doc.pk).exists():
+            raise Http404
 
         # Encode tracking number + deep-link hint so the app can route correctly
         qr_data = f"asc-doctrack://documents/{doc.tracking_number}"

@@ -40,16 +40,18 @@ class CanForwardDocument(BasePermission):
 
 
 class CanViewDocument(BasePermission):
+    """
+    Not currently wired into any view (DocumentViewSet enforces visibility
+    via get_queryset() → Document.objects.visible_to() instead) — kept for
+    any future view that wants an object-level check. Delegates to
+    Document.is_visible_to so there's exactly one definition of "can this
+    user see this document", not a second copy that can drift out of sync.
+    """
     def has_object_permission(self, request, view, obj):
-        if request.user.is_records_admin or request.user.is_superadmin:
-            return True
-        from documents.models import Document
-        return obj.confidentiality != Document.Confidentiality.RESTRICTED
+        return obj.is_visible_to(request.user)
 
 
 class CanDownloadDocument(BasePermission):
+    """Not currently wired into any view — see CanViewDocument above."""
     def has_object_permission(self, request, view, obj):
-        if request.user.is_records_admin or request.user.is_superadmin:
-            return True
-        from documents.models import Document
-        return obj.confidentiality == Document.Confidentiality.PUBLIC
+        return obj.is_downloadable_by(request.user)

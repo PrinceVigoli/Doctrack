@@ -43,13 +43,16 @@ class DocumentViewSet(ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs   = Document.objects.select_related(
+        # SECURITY: visible_to() applies ownership/office scoping for non-admins
+        # (see Document.objects.visible_to / documents/permissions.py docstring).
+        # This is the single enforcement point — get_object() (used by retrieve
+        # and every detail @action below) is keyed off this queryset, so fixing
+        # it here is sufficient; no separate object-level RESTRICTED check is
+        # needed any more.
+        qs = Document.objects.visible_to(user).select_related(
             'doc_type', 'submitted_by', 'current_office',
             'origin_office', 'destination_office', 'assigned_to'
         ).prefetch_related('comments', 'logs')
-
-        if not user.is_records_admin:
-            qs = qs.exclude(confidentiality=Document.Confidentiality.RESTRICTED)
 
         for param, field in [
             ('status',          'status'),
@@ -84,14 +87,6 @@ class DocumentViewSet(ModelViewSet):
             from .permissions import CanForwardDocument
             return [CanForwardDocument()]
         return [permissions.IsAuthenticated()]
-
-    def get_object(self):
-        obj = super().get_object()
-        if not self.request.user.is_records_admin:
-            if obj.confidentiality == Document.Confidentiality.RESTRICTED:
-                from rest_framework.exceptions import PermissionDenied
-                raise PermissionDenied("This document is restricted.")
-        return obj
 
     def perform_create(self, serializer):
         user = self.request.user

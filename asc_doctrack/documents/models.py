@@ -1,5 +1,34 @@
 from django.db import models
+from django.db.models import Q
 from accounts.models import User, Office
+
+
+class DocumentQuerySet(models.QuerySet):
+    def visible_to(self, user):
+        """
+        SECURITY: single source of truth for "can this user see this document
+        at all" — used by DocumentViewSet (list/retrieve and every @action
+        that calls get_object), DocumentQRView, and the tracking WebSocket
+        consumer. Do not reimplement this check elsewhere; route new access
+        points through here instead so the policy can't drift out of sync
+        again (which is how the original bug happened).
+
+        Mirrors the policy documented in documents/permissions.py:
+          superadmin / records_officer → everything, including RESTRICTED
+          program_chair                → their own submissions, plus
+                                          anything currently in their office
+          faculty (and everyone else)  → their own submissions only
+        """
+        if user.is_records_admin:
+            return self.all()
+
+        qs = self.exclude(confidentiality=self.model.Confidentiality.RESTRICTED)
+
+        visible = Q(submitted_by=user)
+        if user.is_program_chair and user.office_id:
+            visible |= Q(current_office_id=user.office_id)
+
+        return qs.filter(visible)
 
 
 class DocumentType(models.Model):
@@ -98,6 +127,8 @@ class Document(models.Model):
     due_date     = models.DateField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 
+    objects = DocumentQuerySet.as_manager()
+
     class Meta:
         ordering = ['-created_at']
 
@@ -130,7 +161,7 @@ class Document(models.Model):
         def check(user):
             if user.is_records_admin:
                 return True
-            return self.confidentiality != self.Confidentiality.RESTRICTED
+            return Document.objects.visible_to(user).filter(pk=self.pk).exists()
         return check
 
     def __str__(self):
