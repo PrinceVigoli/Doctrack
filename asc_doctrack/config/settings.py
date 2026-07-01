@@ -65,7 +65,20 @@ SECRET_KEY, DEBUG = _resolve_security_settings(
     os.getenv('SECRET_KEY'),
     os.getenv('DEBUG'),
 )
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost').split(',')
+# In development, default to '*' so the server is reachable from a phone on
+# the same LAN (e.g. http://192.168.1.7:8000) as well as localhost — Django
+# still validates the Host header, so without this a request coming from a
+# real device (which sends "192.168.x.x:8000" as Host, not "localhost") is
+# rejected with "Invalid HTTP_HOST header" / DisallowedHost, even though the
+# exact same backend works fine from a browser on the dev machine itself.
+# Production must still explicitly set ALLOWED_HOSTS via the environment.
+_allowed_hosts_default = '*' if not IS_PRODUCTION else ''
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', _allowed_hosts_default).split(',')
+if IS_PRODUCTION and not os.getenv('ALLOWED_HOSTS'):
+    raise ImproperlyConfigured(
+        "ALLOWED_HOSTS is not set. Refusing to start outside development "
+        "without an explicit ALLOWED_HOSTS (see .env.example)."
+    )
 
 INSTALLED_APPS = [
     'django.contrib.admin',
