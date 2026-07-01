@@ -11,7 +11,7 @@ import {
   ScrollView, Alert, ActivityIndicator, Image,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import client from '../../api/client';
 import { COLORS, RADIUS, SHADOW } from '../../utils/theme';
 import { Button, StatusBadge } from '../../components';

@@ -8,7 +8,7 @@ import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity,
   Alert, TextInput, Modal, RefreshControl, Linking,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
+const WebView = () => null;
 import { docsAPI, authAPI } from '../../api/services';
 import { BASE_HOST } from '../../api/client';
 import { StatusBadge, Button, LoadingOverlay } from '../../components';

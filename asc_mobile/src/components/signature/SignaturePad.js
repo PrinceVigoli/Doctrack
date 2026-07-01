@@ -4,7 +4,7 @@
  */
 import React, { useRef, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Modal } from 'react-native';
-import { WebView } from 'react-native-webview';
+const WebView = () => null;
 import { useTheme, RADIUS } from '../../utils/theme';
 import { Button } from '../index';
 
