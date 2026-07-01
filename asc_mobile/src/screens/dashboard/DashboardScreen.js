@@ -47,7 +47,7 @@ export default function DashboardScreen({ navigation }) {
     try {
       const [sum, act] = await Promise.all([dashAPI.summary(), dashAPI.activity()]);
       setData(sum.data);
-      setActivity(act.data.slice(0, 5));
+      setActivity((act.data.results || act.data).slice(0, 5));
     } catch (e) {
       setLoadError(e?.response?.data?.detail || 'Could not load dashboard. Pull down to retry.');
     }

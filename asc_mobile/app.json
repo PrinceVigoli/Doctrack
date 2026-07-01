@@ -24,7 +24,19 @@
           "color": "#1B4332"
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "DocTrack uses your camera to scan physical documents."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "DocTrack uses your photo library to select scanned documents."
+        }
+      ]
     ]
   }
 }

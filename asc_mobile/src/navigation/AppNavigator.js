@@ -3,6 +3,7 @@ import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity } from 'rea
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../utils/theme';
 
@@ -20,10 +21,26 @@ import ProfileScreen        from '../screens/profile/ProfileScreen';
 const Stack = createNativeStackNavigator();
 const Tab   = createBottomTabNavigator();
 
-const TAB_ICON = { Dashboard:'📊', Documents:'📁', Scanner:'📷', Notifications:'🔔', Profile:'👤' };
+// Vector icons instead of raw emoji — some Android fonts don't have full
+// color-emoji coverage and silently fall back to broken glyphs (📁/🔔 were
+// rendering as stray "||" / "<" characters on some devices).
+const TAB_ICON = {
+  Dashboard:     { focused: 'grid',            unfocused: 'grid-outline' },
+  Documents:     { focused: 'folder',          unfocused: 'folder-outline' },
+  Scanner:       { focused: 'camera',          unfocused: 'camera-outline' },
+  Notifications: { focused: 'notifications',   unfocused: 'notifications-outline' },
+  Profile:       { focused: 'person-circle',   unfocused: 'person-circle-outline' },
+};
 
-function TabIcon({ name, focused }) {
-  return <Text style={{ fontSize: name==='Scanner'?20:22, opacity: focused?1:0.35 }}>{TAB_ICON[name]}</Text>;
+function TabIcon({ name, focused, color }) {
+  const icon = TAB_ICON[name];
+  return (
+    <Ionicons
+      name={focused ? icon.focused : icon.unfocused}
+      size={name === 'Scanner' ? 22 : 24}
+      color={color}
+    />
+  );
 }
 
 function MainTabs() {
@@ -31,7 +48,7 @@ function MainTabs() {
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused }) => <TabIcon name={route.name} focused={focused} />,
+        tabBarIcon: ({ focused, color }) => <TabIcon name={route.name} focused={focused} color={color} />,
         tabBarActiveTintColor:   C.g800,
         tabBarInactiveTintColor: C.ink4,
         tabBarStyle: { backgroundColor:C.card, borderTopColor:C.brd2, paddingBottom:14, paddingTop:8, height:66 },

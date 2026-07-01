@@ -34,39 +34,47 @@ export default function ScannerScreen({ navigation }) {
 
   // ── Pick from gallery ──────────────────────────────────────
   const pickFromGallery = async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Permission needed', 'Allow access to your photos to pick a document.');
-      return;
-    }
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality:    0.85,
-      base64:     true,
-    });
-    if (!res.canceled && res.assets?.[0]) {
-      setImage({ uri: res.assets[0].uri, base64: res.assets[0].base64 });
-      setResult(null);
-      setError('');
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Allow access to your photos to pick a document.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality:    0.85,
+        base64:     true,
+      });
+      if (!res.canceled && res.assets?.[0]) {
+        setImage({ uri: res.assets[0].uri, base64: res.assets[0].base64 });
+        setResult(null);
+        setError('');
+      }
+    } catch (e) {
+      Alert.alert('Could not open gallery', e?.message || 'Something went wrong. Please try again.');
     }
   };
 
   // ── Take photo with camera ─────────────────────────────────
   const takePhoto = async () => {
-    const perm = await ImagePicker.requestCameraPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Permission needed', 'Allow camera access to scan documents.');
-      return;
-    }
-    const res = await ImagePicker.launchCameraAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality:    0.85,
-      base64:     true,
-    });
-    if (!res.canceled && res.assets?.[0]) {
-      setImage({ uri: res.assets[0].uri, base64: res.assets[0].base64 });
-      setResult(null);
-      setError('');
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Allow camera access to scan documents.');
+        return;
+      }
+      const res = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        quality:    0.85,
+        base64:     true,
+      });
+      if (!res.canceled && res.assets?.[0]) {
+        setImage({ uri: res.assets[0].uri, base64: res.assets[0].base64 });
+        setResult(null);
+        setError('');
+      }
+    } catch (e) {
+      Alert.alert('Could not open camera', e?.message || 'Something went wrong. Please try again.');
     }
   };
 
